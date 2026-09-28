@@ -50,13 +50,23 @@ For all LED descriptions below, the board is oriented with the **ESP32 module on
 
 This ordering matches the PCB silkscreen.
 
-Suggested photographs for a forum post:
+### Board photographs
 
-- front overview showing the ESP32, programming pads and LEDs;
-- rear overview showing `DR-WIFI-04-V2` and the PCB date;
-- close-up of LEDs, R9, R10 and R12;
-- rear trace photograph with the relevant vias marked;
-- final test photograph with all three LEDs illuminated.
+![Front of the opened stick, showing the ESP32 and test pads](images/IMG20260927185943.jpg)
+
+*Front of the opened stick: ESP32-WROOM-32E and labelled test pads.*
+
+![Another front overview of the opened stick](images/IMG20260927185934.jpg)
+
+*Second front overview showing the component layout and USB-A plug.*
+
+![Rear of the DR-WIFI-04-V2 board](images/IMG20260927221016.jpg)
+
+*Rear of the PCB with the `DR-WIFI-04-V2` marking, board date and visible traces.*
+
+![Temporary resistor and soldered test leads on the board](images/IMG20260926204648.jpg)
+
+*Temporary bench setup with a soldered 10 kΩ resistor and test leads. I used 10 kΩ because I did not have the initially suggested 20 kΩ resistor; 10 kΩ worked for the test. After cleaning the pads, the stick worked again without the resistor. This is a troubleshooting photograph, not a required permanent modification.*
 
 ## Confirmed ESP32 connections
 
@@ -428,4 +438,3 @@ When sharing captures, remove Wi-Fi credentials, API keys, MAC addresses and any
 - [Espressif: configuring other JTAG pins](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-guides/jtag-debugging/configure-other-jtag.html)
 - [ESPHome logger component](https://esphome.io/components/logger/)
 - [ESPHome native API component](https://esphome.io/components/api/)
-
