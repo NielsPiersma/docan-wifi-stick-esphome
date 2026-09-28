@@ -429,6 +429,17 @@ Contributions that would help complete this reverse engineering include:
 - confirmation of the YAML on Noon, YP, LN, Panda or other Docan pack families;
 - a safe decoding table for the raw voltage/current/temperature/alarm/FET/I/O status bits.
 
+Additional leads from an independent analysis of the original `wifi_32` firmware (not yet verified against captured responses from this pack):
+
+- Check the high nibble of the four-character LENGTH word. It appears to be `(-sum of the three LENID nibbles) & 0x0F`. The current ESPHome parser checks the 12-bit payload length and frame checksum, but not this length checksum.
+- Capture a response to read-only command `0x84` and compare it with the working `0x42` live-telemetry response and simultaneous app values. The original firmware reportedly polls `0x84`, with a different, apparently fixed response layout. Do not assume the two responses are interchangeable.
+- Before experimenting with another long response, make the ESPHome parser distinguish response types explicitly. At present, an unrelated valid frame could otherwise be interpreted as `0x42` telemetry if its length and a few payload positions happen to match.
+- Investigate read-only commands `0x80`, `0x83` and `0x4D` separately, and compare their responses with the still-unknown status fields and BMS clock. Treat firmware-derived field names and scales as hypotheses until checked against captured frames.
+- Compare the original firmware's reported `0x50`, `0x51`, `0xA0`, `0xB0` and `0xB1` poll cycle with actual UART captures; record BMS model, firmware version and address for each capture.
+- Investigate the factory-looking Wi-Fi configuration reportedly found in the original firmware's NVS partition (SSID `DR_New_Energy`). Determine whether the stick joins that network as a client or creates its own access point, and whether the entry is only a leftover production/test setting. A stored SSID and password alone do not establish the Wi-Fi mode or that a user's network was never configured. Do not publish the stored password.
+
+The original firmware also appears to support remote settings and BMS firmware updates. Those write paths are outside the scope of this read-only project. Do not publish a raw flash dump: its NVS partition may contain Wi-Fi credentials or other device-specific data.
+
 When sharing captures, remove Wi-Fi credentials, API keys, MAC addresses and any serial numbers you consider private.
 
 ## References
