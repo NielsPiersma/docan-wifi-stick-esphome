@@ -1,0 +1,1086 @@
+# Community template for the DoCan DR-WIFI-04-V2 battery Wi-Fi stick
+# Tested with a DoCan ZZ 16S battery and automatic BMS-address discovery.
+# ESP32 service stick UART: GPIO4 TX, GPIO17 RX, 9600 8N1.
+#
+# Polling:
+#   - Broadcast discovery until the connected BMS address is known
+#   - DR-1363 service 0x42 every 10 seconds for live telemetry
+#   - DR-1363 service B0/data group 04 every 60 seconds for lifetime counters
+#
+# Required secrets:
+#   wifi_ssid
+#   wifi_password
+#   docan_api_encryption_key
+#   docan_ap_password
+
+esphome:
+  name: docan-pack
+  friendly_name: Docan battery
+
+esp32:
+  variant: esp32
+  flash_size: 8MB
+  framework:
+    type: esp-idf
+
+logger:
+  level: DEBUG
+  baud_rate: 0
+  tx_buffer_size: 2048
+
+api:
+  encryption:
+    key: !secret docan_api_encryption_key
+
+ota:
+  - platform: esphome
+    encryption:
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "Docan Pack Fallback Hotspot"
+    password: !secret docan_ap_password
+
+captive_portal:
+
+globals:
+  # 0xFF means "not discovered yet". Valid DoCan addresses include 0x00.
+  - id: docan_bms_address
+    type: uint8_t
+    restore_value: false
+    initial_value: "0xFF"
+
+  - id: docan_last_valid_frame_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+
+  - id: docan_valid_frame_count
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+
+  - id: docan_invalid_frame_count
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+
+uart:
+  id: docan_uart
+  tx_pin: GPIO4
+  rx_pin: GPIO17
+  baud_rate: 9600
+  data_bits: 8
+  parity: NONE
+  stop_bits: 1
+  rx_buffer_size: 2048
+
+  debug:
+    direction: BOTH
+    dummy_receiver: true
+    debug_prefix: "[DOCAN] "
+    after:
+      delimiter: [0x0D]
+      timeout: 250ms
+      bytes: 512
+    sequence:
+      - lambda: |-
+          UARTDebug::log_string(direction, bytes, debug_prefix);
+
+          if (direction != uart::UART_DIRECTION_RX) {
+            return;
+          }
+
+          auto mark_invalid = [&]() {
+            id(docan_invalid_frame_count)++;
+            id(docan_invalid_frames).publish_state(id(docan_invalid_frame_count));
+          };
+
+          std::string frame(bytes.begin(), bytes.end());
+          const size_t start = frame.find('~');
+          if (start == std::string::npos) {
+            mark_invalid();
+            return;
+          }
+          if (start != 0) {
+            frame.erase(0, start);
+          }
+          while (!frame.empty() && (frame.back() == '\r' || frame.back() == '\n')) {
+            frame.pop_back();
+          }
+
+          auto hex_nibble = [](char value) -> int {
+            if (value >= '0' && value <= '9') return value - '0';
+            if (value >= 'A' && value <= 'F') return value - 'A' + 10;
+            if (value >= 'a' && value <= 'f') return value - 'a' + 10;
+            return -1;
+          };
+
+          auto parse_hex = [&](size_t position, size_t count, uint32_t &value) -> bool {
+            if (position + count > frame.size()) return false;
+            value = 0;
+            for (size_t i = 0; i < count; i++) {
+              const int nibble = hex_nibble(frame[position + i]);
+              if (nibble < 0) return false;
+              value = (value << 4) | static_cast<uint32_t>(nibble);
+            }
+            return true;
+          };
+
+          if (frame.size() < 17 || frame[0] != '~' || frame.substr(1, 2) != "22") {
+            mark_invalid();
+            return;
+          }
+
+          uint32_t response_address = 0;
+          if (!parse_hex(3, 2, response_address) || frame.substr(5, 2) != "4A") {
+            mark_invalid();
+            return;
+          }
+
+          uint32_t length_word = 0;
+          if (!parse_hex(9, 4, length_word)) {
+            mark_invalid();
+            return;
+          }
+
+          const size_t payload_chars = length_word & 0x0FFF;
+          const size_t checksum_position = 13 + payload_chars;
+          if ((payload_chars & 1U) != 0 || payload_chars > 1024 ||
+              frame.size() != checksum_position + 4) {
+            mark_invalid();
+            return;
+          }
+
+          uint32_t expected_checksum = 0;
+          if (!parse_hex(checksum_position, 4, expected_checksum)) {
+            mark_invalid();
+            return;
+          }
+
+          uint32_t ascii_sum = 0;
+          for (size_t i = 1; i < checksum_position; i++) {
+            ascii_sum += static_cast<uint8_t>(frame[i]);
+          }
+          const uint16_t calculated_checksum =
+              static_cast<uint16_t>(0U - static_cast<uint16_t>(ascii_sum));
+          if (calculated_checksum != static_cast<uint16_t>(expected_checksum)) {
+            ESP_LOGW("docan", "Checksum mismatch: expected %04X, calculated %04X",
+                     static_cast<unsigned>(expected_checksum), calculated_checksum);
+            mark_invalid();
+            return;
+          }
+
+          std::vector<uint8_t> payload;
+          payload.reserve(payload_chars / 2);
+          for (size_t i = 0; i < payload_chars; i += 2) {
+            const int high = hex_nibble(frame[13 + i]);
+            const int low = hex_nibble(frame[13 + i + 1]);
+            if (high < 0 || low < 0) {
+              mark_invalid();
+              return;
+            }
+            payload.push_back(static_cast<uint8_t>((high << 4) | low));
+          }
+
+          id(docan_last_valid_frame_ms) = millis();
+          id(docan_communication).publish_state(true);
+          id(docan_bms_activity_pulse).execute();
+          id(docan_valid_frame_count)++;
+          id(docan_valid_frames).publish_state(id(docan_valid_frame_count));
+
+          // A successful zero-length response to our broadcast discovery
+          // carries the BMS address in characters 3..4. Other replies from
+          // these BMS units may use 00 in their response header, so discovery
+          // is deliberately the only frame used to learn the address.
+          if (payload.empty() && frame.substr(7, 2) == "00") {
+            id(docan_bms_address) = static_cast<uint8_t>(response_address);
+            id(docan_detected_bms_address).publish_state(response_address);
+            id(docan_detected_pack_number).publish_state(response_address + 1U);
+            ESP_LOGI("docan", "BMS discovered at address %02X (pack %u)",
+                     static_cast<unsigned>(response_address),
+                     static_cast<unsigned>(response_address + 1U));
+            return;
+          }
+
+          auto be16 = [&](size_t position) -> uint16_t {
+            return (static_cast<uint16_t>(payload[position]) << 8) |
+                   static_cast<uint16_t>(payload[position + 1]);
+          };
+          auto be16s = [&](size_t position) -> int16_t {
+            return static_cast<int16_t>(be16(position));
+          };
+          auto be32 = [&](size_t position) -> uint32_t {
+            return (static_cast<uint32_t>(payload[position]) << 24) |
+                   (static_cast<uint32_t>(payload[position + 1]) << 16) |
+                   (static_cast<uint32_t>(payload[position + 2]) << 8) |
+                   static_cast<uint32_t>(payload[position + 3]);
+          };
+
+          // DR-1363 service B0, operation 01, data group 04: lifetime counters.
+          if (payload.size() >= 24 && payload[0] == 0xB0 && payload[2] == 0x01 &&
+              payload[3] == 0x04 && payload[4] == 0xFF) {
+            id(docan_design_capacity).publish_state(be16(10) / 100.0f);
+            // This DoCan firmware stores lifetime capacity in 0.1 Ah units.
+            // The scale is confirmed by the matching lifetime-energy values.
+            id(docan_lifetime_charge_ah).publish_state(be32(12) / 10.0f);
+            id(docan_lifetime_discharge_ah).publish_state(be32(16) / 10.0f);
+            id(docan_lifetime_charge_energy).publish_state(be16(20) / 100.0f);
+            id(docan_lifetime_discharge_energy).publish_state(be16(22) / 100.0f);
+            return;
+          }
+
+          // DR-1363 service 42: dynamic live telemetry structure.
+          if (payload.size() < 66 || payload[5] == 0 || payload[5] > 16) {
+            return;
+          }
+
+          const uint8_t cell_count = payload[5];
+          size_t position = 6;
+          if (payload.size() < position + (2U * cell_count) + 7U) {
+            mark_invalid();
+            return;
+          }
+
+          const float soc = be16(1) / 100.0f;
+          const float voltage = be16(3) / 100.0f;
+          float cell_values[16] = {};
+          float cell_min = 100.0f;
+          float cell_max = 0.0f;
+          float cell_sum = 0.0f;
+          uint8_t cell_min_number = 0;
+          uint8_t cell_max_number = 0;
+
+          for (uint8_t i = 0; i < cell_count; i++) {
+            const float value = be16(position) / 1000.0f;
+            position += 2;
+            cell_values[i] = value;
+            cell_sum += value;
+            if (value < cell_min) {
+              cell_min = value;
+              cell_min_number = i + 1;
+            }
+            if (value > cell_max) {
+              cell_max = value;
+              cell_max_number = i + 1;
+            }
+          }
+
+          const float environment_temperature = be16s(position) / 10.0f;
+          position += 2;
+          const float pack_temperature = be16s(position) / 10.0f;
+          position += 2;
+          const float mos_temperature = be16s(position) / 10.0f;
+          position += 2;
+
+          const uint8_t temperature_count = payload[position++];
+          if (temperature_count > 16 || payload.size() < position + (2U * temperature_count) + 13U) {
+            mark_invalid();
+            return;
+          }
+
+          float cell_temperatures[4] = {};
+          for (uint8_t i = 0; i < temperature_count; i++) {
+            const float value = be16s(position) / 10.0f;
+            position += 2;
+            if (i < 4) cell_temperatures[i] = value;
+          }
+
+          const float current = be16s(position) / 100.0f;
+          position += 2;
+          const float internal_resistance = be16(position) / 10.0f;
+          position += 2;
+          const float soh = be16(position);
+          position += 2;
+          position += 1;  // User-defined number.
+          const float full_capacity = be16(position) / 100.0f;
+          position += 2;
+          const float remaining_capacity = be16(position) / 100.0f;
+          position += 2;
+          const float cycle_count = be16(position);
+          position += 2;
+
+          id(docan_pack_voltage).publish_state(voltage);
+          id(docan_pack_current).publish_state(current);
+          id(docan_pack_power).publish_state(voltage * current);
+          id(docan_soc).publish_state(soc);
+          id(docan_soh).publish_state(soh);
+          id(docan_remaining_capacity).publish_state(remaining_capacity);
+          id(docan_full_capacity).publish_state(full_capacity);
+          id(docan_cycle_count).publish_state(cycle_count);
+          id(docan_cell_count).publish_state(cell_count);
+          id(docan_internal_resistance).publish_state(internal_resistance);
+          id(docan_cell_voltage_min).publish_state(cell_min);
+          id(docan_cell_voltage_max).publish_state(cell_max);
+          id(docan_cell_voltage_average).publish_state(cell_sum / cell_count);
+          id(docan_cell_voltage_delta).publish_state((cell_max - cell_min) * 1000.0f);
+          id(docan_lowest_cell).publish_state(cell_min_number);
+          id(docan_highest_cell).publish_state(cell_max_number);
+          id(docan_environment_temperature).publish_state(environment_temperature);
+          id(docan_pack_temperature).publish_state(pack_temperature);
+          id(docan_mos_temperature).publish_state(mos_temperature);
+
+          if (cell_count >= 1) id(docan_cell_voltage_01).publish_state(cell_values[0]);
+          if (cell_count >= 2) id(docan_cell_voltage_02).publish_state(cell_values[1]);
+          if (cell_count >= 3) id(docan_cell_voltage_03).publish_state(cell_values[2]);
+          if (cell_count >= 4) id(docan_cell_voltage_04).publish_state(cell_values[3]);
+          if (cell_count >= 5) id(docan_cell_voltage_05).publish_state(cell_values[4]);
+          if (cell_count >= 6) id(docan_cell_voltage_06).publish_state(cell_values[5]);
+          if (cell_count >= 7) id(docan_cell_voltage_07).publish_state(cell_values[6]);
+          if (cell_count >= 8) id(docan_cell_voltage_08).publish_state(cell_values[7]);
+          if (cell_count >= 9) id(docan_cell_voltage_09).publish_state(cell_values[8]);
+          if (cell_count >= 10) id(docan_cell_voltage_10).publish_state(cell_values[9]);
+          if (cell_count >= 11) id(docan_cell_voltage_11).publish_state(cell_values[10]);
+          if (cell_count >= 12) id(docan_cell_voltage_12).publish_state(cell_values[11]);
+          if (cell_count >= 13) id(docan_cell_voltage_13).publish_state(cell_values[12]);
+          if (cell_count >= 14) id(docan_cell_voltage_14).publish_state(cell_values[13]);
+          if (cell_count >= 15) id(docan_cell_voltage_15).publish_state(cell_values[14]);
+          if (cell_count >= 16) id(docan_cell_voltage_16).publish_state(cell_values[15]);
+
+          if (temperature_count >= 1) id(docan_cell_temperature_1).publish_state(cell_temperatures[0]);
+          if (temperature_count >= 2) id(docan_cell_temperature_2).publish_state(cell_temperatures[1]);
+          if (temperature_count >= 3) id(docan_cell_temperature_3).publish_state(cell_temperatures[2]);
+          if (temperature_count >= 4) id(docan_cell_temperature_4).publish_state(cell_temperatures[3]);
+
+          if (current > 0.10f) {
+            id(docan_operating_state).publish_state("Charging");
+          } else if (current < -0.10f) {
+            id(docan_operating_state).publish_state("Discharging");
+          } else {
+            id(docan_operating_state).publish_state("Idle");
+          }
+
+          // The final status words are retained as raw diagnostics until all
+          // vendor-specific bit meanings have been confirmed.
+          if (payload.size() >= position + 33U) {
+            const uint16_t voltage_status = be16(position);
+            position += 2;
+            const uint16_t current_status = be16(position);
+            position += 2;
+            const uint16_t temperature_status = be16(position);
+            position += 2;
+            const uint16_t alarm_status = be16(position);
+            position += 2;
+            const uint16_t fet_status = be16(position);
+            position += 2;
+            position += 8;  // Four low status words.
+            const uint16_t balance_low = be16(position);
+            position += 2;
+            const uint16_t balance_high = be16(position);
+            position += 2;
+            position += 8;  // Four high status words.
+            const uint8_t machine_status = payload[position++];
+            const uint16_t io_status = be16(position);
+
+            id(docan_voltage_status).publish_state(voltage_status);
+            id(docan_current_status).publish_state(current_status);
+            id(docan_temperature_status).publish_state(temperature_status);
+            id(docan_alarm_status).publish_state(alarm_status);
+            id(docan_fet_status).publish_state(fet_status);
+            id(docan_balance_status_low).publish_state(balance_low);
+            id(docan_balance_status_high).publish_state(balance_high);
+            id(docan_machine_status).publish_state(machine_status);
+            id(docan_io_status).publish_state(io_status);
+          }
+
+script:
+  # LED 3 remains on while BMS communication is healthy. Every valid frame
+  # creates a short dark pulse to make actual data activity visible.
+  - id: docan_bms_activity_pulse
+    mode: restart
+    then:
+      - output.turn_off: docan_led_3
+      - delay: 120ms
+      - if:
+          condition:
+            binary_sensor.is_on: docan_communication
+          then:
+            - output.turn_on: docan_led_3
+
+  # Build every addressed request at runtime. The checksum is the 16-bit
+  # two's-complement of the sum of all ASCII characters between '~' and it.
+  - id: docan_send_addressed_command
+    mode: queued
+    max_runs: 5
+    parameters:
+      command_tail: string
+    then:
+      - lambda: |-
+          if (id(docan_bms_address) == 0xFF) {
+            ESP_LOGD("docan", "Command postponed: BMS address is not known yet");
+            return;
+          }
+
+          char address[3];
+          snprintf(address, sizeof(address), "%02X", id(docan_bms_address));
+          const std::string body = std::string("22") + address + "4A" + command_tail;
+
+          uint32_t ascii_sum = 0;
+          for (const char value : body) {
+            ascii_sum += static_cast<uint8_t>(value);
+          }
+          const uint16_t checksum =
+              static_cast<uint16_t>(0U - static_cast<uint16_t>(ascii_sum));
+
+          char checksum_text[5];
+          snprintf(checksum_text, sizeof(checksum_text), "%04X", checksum);
+          const std::string request = "~" + body + checksum_text + "\r";
+          id(docan_uart).write_str(request.c_str());
+
+interval:
+  # LED 1: short heartbeat pulse to show that the ESP32 firmware is running.
+  - interval: 2s
+    startup_delay: 2s
+    then:
+      - output.turn_on: docan_led_1
+      - delay: 120ms
+      - output.turn_off: docan_led_1
+
+  # LED 2: solid while Home Assistant is connected and subscribed to states.
+  # Logger-only API clients deliberately do not count as Home Assistant.
+  - interval: 1s
+    then:
+      - if:
+          condition:
+            api.connected:
+              state_subscription_only: true
+          then:
+            - output.turn_on: docan_led_2
+          else:
+            - output.turn_off: docan_led_2
+
+  # Discovery is broadcast on address 00. Repeat only while no address is known.
+  - interval: 5s
+    startup_delay: 2s
+    then:
+      - if:
+          condition:
+            lambda: return id(docan_bms_address) == 0xFF;
+          then:
+            - uart.write:
+                id: docan_uart
+                data: "~22004A500000FDA2\r"
+
+  - interval: 10s
+    startup_delay: 4s
+    then:
+      - script.execute:
+          id: docan_send_addressed_command
+          command_tail: "42E00200"
+
+  - interval: 60s
+    startup_delay: 8s
+    then:
+      - script.execute:
+          id: docan_send_addressed_command
+          command_tail: "B0600A000104FF00"
+
+  - interval: 10s
+    startup_delay: 15s
+    then:
+      - lambda: |-
+          const uint32_t last = id(docan_last_valid_frame_ms);
+          if (last == 0 || static_cast<uint32_t>(millis() - last) > 30000U) {
+            id(docan_communication).publish_state(false);
+            if (id(docan_bms_address) != 0xFF) {
+              ESP_LOGW("docan", "BMS timeout; restarting address discovery");
+              id(docan_bms_address) = 0xFF;
+            }
+          }
+
+button:
+  - platform: template
+    name: "Refresh live telemetry"
+    entity_category: diagnostic
+    on_press:
+      - script.execute:
+          id: docan_send_addressed_command
+          command_tail: "42E00200"
+
+  - platform: template
+    name: "Refresh lifetime counters"
+    entity_category: diagnostic
+    on_press:
+      - script.execute:
+          id: docan_send_addressed_command
+          command_tail: "B0600A000104FF00"
+
+  - platform: template
+    name: "BMS discovery"
+    entity_category: diagnostic
+    on_press:
+      - uart.write:
+          id: docan_uart
+          data: "~22004A500000FDA2\r"
+
+  - platform: template
+    name: "BMS manufacturer data"
+    entity_category: diagnostic
+    on_press:
+      - script.execute:
+          id: docan_send_addressed_command
+          command_tail: "510000"
+
+output:
+  # The USB-side anodes of all three LEDs are connected to 3.3 V.
+  # Their cathodes run through R9/R10/R12 to GPIO25/GPIO26/GPIO27,
+  # so they are active-low: output ON drives the GPIO low and lights the LED.
+  - platform: gpio
+    id: docan_led_1
+    pin:
+      number: GPIO25
+      inverted: true
+
+  - platform: gpio
+    id: docan_led_2
+    pin:
+      number: GPIO26
+      inverted: true
+
+  - platform: gpio
+    id: docan_led_3
+    pin:
+      number: GPIO27
+      inverted: true
+
+binary_sensor:
+  - platform: template
+    id: docan_communication
+    name: "BMS communication"
+    device_class: connectivity
+    entity_category: diagnostic
+    on_press:
+      - output.turn_on: docan_led_3
+    on_release:
+      - output.turn_off: docan_led_3
+
+text_sensor:
+  - platform: template
+    id: docan_operating_state
+    name: "Operating state"
+    icon: mdi:battery-sync
+
+sensor:
+  - platform: template
+    id: docan_detected_bms_address
+    name: "Detected BMS address"
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    update_interval: never
+
+  - platform: template
+    id: docan_detected_pack_number
+    name: "Detected pack number"
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    update_interval: never
+
+  - platform: template
+    id: docan_pack_voltage
+    name: "Pack voltage"
+    unit_of_measurement: "V"
+    device_class: voltage
+    state_class: measurement
+    accuracy_decimals: 2
+    update_interval: never
+
+  - platform: template
+    id: docan_pack_current
+    name: "Pack current"
+    unit_of_measurement: "A"
+    device_class: current
+    state_class: measurement
+    accuracy_decimals: 2
+    update_interval: never
+
+  - platform: template
+    id: docan_pack_power
+    name: "Pack power"
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+    update_interval: never
+
+  - platform: template
+    id: docan_soc
+    name: "State of charge"
+    unit_of_measurement: "%"
+    device_class: battery
+    state_class: measurement
+    accuracy_decimals: 2
+    update_interval: never
+
+  - platform: template
+    id: docan_soh
+    name: "State of health"
+    unit_of_measurement: "%"
+    state_class: measurement
+    accuracy_decimals: 0
+    icon: mdi:battery-heart-variant
+    update_interval: never
+
+  - platform: template
+    id: docan_remaining_capacity
+    name: "Remaining capacity"
+    unit_of_measurement: "Ah"
+    state_class: measurement
+    accuracy_decimals: 2
+    icon: mdi:battery-medium
+    update_interval: never
+
+  - platform: template
+    id: docan_full_capacity
+    name: "Full charge capacity"
+    unit_of_measurement: "Ah"
+    state_class: measurement
+    accuracy_decimals: 2
+    icon: mdi:battery-high
+    update_interval: never
+
+  - platform: template
+    id: docan_design_capacity
+    name: "Design capacity"
+    unit_of_measurement: "Ah"
+    state_class: measurement
+    accuracy_decimals: 2
+    icon: mdi:battery-check
+    update_interval: never
+
+  - platform: template
+    id: docan_cycle_count
+    name: "Cycle count"
+    state_class: total_increasing
+    accuracy_decimals: 0
+    icon: mdi:counter
+    update_interval: never
+
+  - platform: template
+    id: docan_lifetime_charge_ah
+    name: "Lifetime charged capacity"
+    unit_of_measurement: "Ah"
+    state_class: total_increasing
+    accuracy_decimals: 2
+    icon: mdi:battery-plus
+    update_interval: never
+
+  - platform: template
+    id: docan_lifetime_discharge_ah
+    name: "Lifetime discharged capacity"
+    unit_of_measurement: "Ah"
+    state_class: total_increasing
+    accuracy_decimals: 2
+    icon: mdi:battery-minus
+    update_interval: never
+
+  - platform: template
+    id: docan_lifetime_charge_energy
+    name: "Lifetime charged energy"
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 2
+    icon: mdi:battery-arrow-up
+    update_interval: never
+
+  - platform: template
+    id: docan_lifetime_discharge_energy
+    name: "Lifetime discharged energy"
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 2
+    icon: mdi:battery-arrow-down
+    update_interval: never
+
+  - platform: template
+    id: docan_cell_voltage_min
+    name: "Lowest cell voltage"
+    unit_of_measurement: "V"
+    device_class: voltage
+    state_class: measurement
+    accuracy_decimals: 3
+    update_interval: never
+
+  - platform: template
+    id: docan_cell_voltage_max
+    name: "Highest cell voltage"
+    unit_of_measurement: "V"
+    device_class: voltage
+    state_class: measurement
+    accuracy_decimals: 3
+    update_interval: never
+
+  - platform: template
+    id: docan_cell_voltage_average
+    name: "Average cell voltage"
+    unit_of_measurement: "V"
+    device_class: voltage
+    state_class: measurement
+    accuracy_decimals: 3
+    update_interval: never
+
+  - platform: template
+    id: docan_cell_voltage_delta
+    name: "Cell voltage delta"
+    unit_of_measurement: "mV"
+    state_class: measurement
+    accuracy_decimals: 0
+    icon: mdi:delta
+    update_interval: never
+
+  - platform: template
+    id: docan_lowest_cell
+    name: "Lowest cell number"
+    accuracy_decimals: 0
+    icon: mdi:numeric
+    update_interval: never
+
+  - platform: template
+    id: docan_highest_cell
+    name: "Highest cell number"
+    accuracy_decimals: 0
+    icon: mdi:numeric
+    update_interval: never
+
+  - platform: template
+    id: docan_environment_temperature
+    name: "Environment temperature"
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    accuracy_decimals: 1
+    update_interval: never
+
+  - platform: template
+    id: docan_pack_temperature
+    name: "Pack average temperature"
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    accuracy_decimals: 1
+    update_interval: never
+
+  - platform: template
+    id: docan_mos_temperature
+    name: "MOS temperature"
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    accuracy_decimals: 1
+    update_interval: never
+
+  - platform: template
+    id: docan_cell_temperature_1
+    name: "Cell temperature 1"
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    accuracy_decimals: 1
+    entity_category: diagnostic
+    update_interval: never
+
+  - platform: template
+    id: docan_cell_temperature_2
+    name: "Cell temperature 2"
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    accuracy_decimals: 1
+    entity_category: diagnostic
+    update_interval: never
+
+  - platform: template
+    id: docan_cell_temperature_3
+    name: "Cell temperature 3"
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    accuracy_decimals: 1
+    entity_category: diagnostic
+    update_interval: never
+
+  - platform: template
+    id: docan_cell_temperature_4
+    name: "Cell temperature 4"
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    accuracy_decimals: 1
+    entity_category: diagnostic
+    update_interval: never
+
+  - platform: template
+    id: docan_cell_count
+    name: "Cell count"
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    update_interval: never
+
+  - platform: template
+    id: docan_internal_resistance
+    name: "Pack internal resistance"
+    unit_of_measurement: "mΩ"
+    state_class: measurement
+    accuracy_decimals: 1
+    entity_category: diagnostic
+    update_interval: never
+
+  - platform: template
+    id: docan_valid_frames
+    name: "Valid frames"
+    state_class: total_increasing
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    update_interval: never
+
+  - platform: template
+    id: docan_invalid_frames
+    name: "Invalid frames"
+    state_class: total_increasing
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    update_interval: never
+
+  - platform: template
+    id: docan_voltage_status
+    name: "Raw voltage status"
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    update_interval: never
+
+  - platform: template
+    id: docan_current_status
+    name: "Raw current status"
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    update_interval: never
+
+  - platform: template
+    id: docan_temperature_status
+    name: "Raw temperature status"
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    update_interval: never
+
+  - platform: template
+    id: docan_alarm_status
+    name: "Raw alarm status"
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    update_interval: never
+
+  - platform: template
+    id: docan_fet_status
+    name: "Raw FET status"
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    update_interval: never
+
+  - platform: template
+    id: docan_balance_status_low
+    name: "Raw balance status low"
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    update_interval: never
+
+  - platform: template
+    id: docan_balance_status_high
+    name: "Raw balance status high"
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    update_interval: never
+
+  - platform: template
+    id: docan_machine_status
+    name: "Raw machine status"
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    update_interval: never
+
+  - platform: template
+    id: docan_io_status
+    name: "Raw IO status"
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    update_interval: never
+
+  # Individual cell voltages are diagnostic entities and throttled to reduce
+  # Home Assistant recorder traffic while aggregate values update every poll.
+  - platform: template
+    id: docan_cell_voltage_01
+    name: "Cell 01 voltage"
+    unit_of_measurement: "V"
+    device_class: voltage
+    state_class: measurement
+    accuracy_decimals: 3
+    entity_category: diagnostic
+    update_interval: never
+    filters: [{ throttle: 30s }]
+
+  - platform: template
+    id: docan_cell_voltage_02
+    name: "Cell 02 voltage"
+    unit_of_measurement: "V"
+    device_class: voltage
+    state_class: measurement
+    accuracy_decimals: 3
+    entity_category: diagnostic
+    update_interval: never
+    filters: [{ throttle: 30s }]
+
+  - platform: template
+    id: docan_cell_voltage_03
+    name: "Cell 03 voltage"
+    unit_of_measurement: "V"
+    device_class: voltage
+    state_class: measurement
+    accuracy_decimals: 3
+    entity_category: diagnostic
+    update_interval: never
+    filters: [{ throttle: 30s }]
+
+  - platform: template
+    id: docan_cell_voltage_04
+    name: "Cell 04 voltage"
+    unit_of_measurement: "V"
+    device_class: voltage
+    state_class: measurement
+    accuracy_decimals: 3
+    entity_category: diagnostic
+    update_interval: never
+    filters: [{ throttle: 30s }]
+
+  - platform: template
+    id: docan_cell_voltage_05
+    name: "Cell 05 voltage"
+    unit_of_measurement: "V"
+    device_class: voltage
+    state_class: measurement
+    accuracy_decimals: 3
+    entity_category: diagnostic
+    update_interval: never
+    filters: [{ throttle: 30s }]
+
+  - platform: template
+    id: docan_cell_voltage_06
+    name: "Cell 06 voltage"
+    unit_of_measurement: "V"
+    device_class: voltage
+    state_class: measurement
+    accuracy_decimals: 3
+    entity_category: diagnostic
+    update_interval: never
+    filters: [{ throttle: 30s }]
+
+  - platform: template
+    id: docan_cell_voltage_07
+    name: "Cell 07 voltage"
+    unit_of_measurement: "V"
+    device_class: voltage
+    state_class: measurement
+    accuracy_decimals: 3
+    entity_category: diagnostic
+    update_interval: never
+    filters: [{ throttle: 30s }]
+
+  - platform: template
+    id: docan_cell_voltage_08
+    name: "Cell 08 voltage"
+    unit_of_measurement: "V"
+    device_class: voltage
+    state_class: measurement
+    accuracy_decimals: 3
+    entity_category: diagnostic
+    update_interval: never
+    filters: [{ throttle: 30s }]
+
+  - platform: template
+    id: docan_cell_voltage_09
+    name: "Cell 09 voltage"
+    unit_of_measurement: "V"
+    device_class: voltage
+    state_class: measurement
+    accuracy_decimals: 3
+    entity_category: diagnostic
+    update_interval: never
+    filters: [{ throttle: 30s }]
+
+  - platform: template
+    id: docan_cell_voltage_10
+    name: "Cell 10 voltage"
+    unit_of_measurement: "V"
+    device_class: voltage
+    state_class: measurement
+    accuracy_decimals: 3
+    entity_category: diagnostic
+    update_interval: never
+    filters: [{ throttle: 30s }]
+
+  - platform: template
+    id: docan_cell_voltage_11
+    name: "Cell 11 voltage"
+    unit_of_measurement: "V"
+    device_class: voltage
+    state_class: measurement
+    accuracy_decimals: 3
+    entity_category: diagnostic
+    update_interval: never
+    filters: [{ throttle: 30s }]
+
+  - platform: template
+    id: docan_cell_voltage_12
+    name: "Cell 12 voltage"
+    unit_of_measurement: "V"
+    device_class: voltage
+    state_class: measurement
+    accuracy_decimals: 3
+    entity_category: diagnostic
+    update_interval: never
+    filters: [{ throttle: 30s }]
+
+  - platform: template
+    id: docan_cell_voltage_13
+    name: "Cell 13 voltage"
+    unit_of_measurement: "V"
+    device_class: voltage
+    state_class: measurement
+    accuracy_decimals: 3
+    entity_category: diagnostic
+    update_interval: never
+    filters: [{ throttle: 30s }]
+
+  - platform: template
+    id: docan_cell_voltage_14
+    name: "Cell 14 voltage"
+    unit_of_measurement: "V"
+    device_class: voltage
+    state_class: measurement
+    accuracy_decimals: 3
+    entity_category: diagnostic
+    update_interval: never
+    filters: [{ throttle: 30s }]
+
+  - platform: template
+    id: docan_cell_voltage_15
+    name: "Cell 15 voltage"
+    unit_of_measurement: "V"
+    device_class: voltage
+    state_class: measurement
+    accuracy_decimals: 3
+    entity_category: diagnostic
+    update_interval: never
+    filters: [{ throttle: 30s }]
+
+  - platform: template
+    id: docan_cell_voltage_16
+    name: "Cell 16 voltage"
+    unit_of_measurement: "V"
+    device_class: voltage
+    state_class: measurement
+    accuracy_decimals: 3
+    entity_category: diagnostic
+    update_interval: never
+    filters: [{ throttle: 30s }]
