@@ -5,6 +5,28 @@
 **Module:** Espressif ESP32-WROOM-32E  
 **Battery tested:** Docan/DoCan 16-cell LiFePO4 battery using the ASCII BMS protocol described below
 
+## Home Assistant result
+
+The decoded BMS data is published as native ESPHome entities. This dashboard combines both battery packs and shows state of charge, stored energy, individual cell voltages, cell delta, temperatures, capacity and state of health.
+
+![Home Assistant overview showing two Docan battery packs](images/home-assistant-overview.png)
+
+### Historical monitoring
+
+Because the values are normal Home Assistant entities, they can be recorded and compared over time. This makes it possible to monitor pack synchronization, cell-voltage drift, temperature differences and balancing behaviour.
+
+![Home Assistant history graphs for state of charge, temperatures and cell voltages](images/home-assistant-history.png)
+
+<details>
+<summary>ESPHome and BMS diagnostics</summary>
+
+The diagnostic entities expose valid-frame counters, raw status words and the automatically discovered BMS address and pack number.
+
+![ESPHome diagnostics showing valid frames and BMS addressing](images/home-assistant-diagnostics.png)
+
+</details>
+
+
 ## Summary
 
 I replaced the original firmware on a Docan battery Wi-Fi stick with ESPHome. The stick now reads the BMS locally, publishes the values directly to Home Assistant, discovers the connected BMS address automatically, and uses its three onboard LEDs for useful local status.
