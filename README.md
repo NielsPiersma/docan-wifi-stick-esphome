@@ -1,7 +1,7 @@
 # Reverse-engineering the Docan DR-WIFI-04-V2 battery Wi-Fi stick for ESPHome
 
 **Status:** working prototype, documented 27 September 2026  
-**Board tested:** `DR-WIFI-04-V2`, PCB date `2025-05-16`  
+**Board tested:** `DR-WIFI-04-V2`, PCB date `2024-05-06`  
 **Module:** Espressif ESP32-WROOM-32E  
 **Battery tested:** Docan/DoCan ZZ 16-cell LiFePO4 packs (BMS firmware `STD05`, `LN10` and `ANZ09`) using the ASCII BMS protocol described below
 
@@ -69,7 +69,7 @@ The work had two parts:
 The rear silkscreen identifies the tested board as:
 
 - `DR-WIFI-04-V2`
-- `2025-05-16`
+- `2024-05-06`
 
 For all LED descriptions below, the board is oriented with the **ESP32 module on the left** and the **USB-A plug on the right**. The LEDs then form a vertical row:
 
