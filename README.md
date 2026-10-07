@@ -3,7 +3,7 @@
 **Status:** working prototype, documented 27 September 2026  
 **Board tested:** `DR-WIFI-04-V2`, PCB date `2025-05-16`  
 **Module:** Espressif ESP32-WROOM-32E  
-**Battery tested:** Docan/DoCan 16-cell LiFePO4 battery using the ASCII BMS protocol described below
+**Battery tested:** Docan/DoCan ZZ 16-cell LiFePO4 packs (BMS firmware `STD05`, `LN10` and `ANZ09`) using the ASCII BMS protocol described below
 
 ## Home Assistant result
 
@@ -40,6 +40,7 @@ The configuration currently provides:
 - operating state: charging, discharging or idle;
 - raw BMS alarm/status words for future decoding;
 - design capacity and lifetime charge/discharge counters;
+- BMS hardware, firmware and model, plus serial-number fields, production date and manufacturer code;
 - valid/invalid frame counters and BMS communication state;
 - automatic BMS-address discovery and recovery after a communication timeout;
 - three automatic status LEDs.
@@ -227,6 +228,21 @@ The BMS uses printable ASCII hexadecimal frames. Every captured frame starts wit
 
 The lower 12 bits of the four-character length word are the **number of ASCII payload characters**, not the number of decoded bytes. The count must therefore be even.
 
+Responses carry the return code (`RTN`, `00` for success) at positions 7–8 instead of the command (`CID2`). A response therefore does not say which request it answers. The ESPHome configuration sends one request at a time, remembers the pending `CID2` (and, for `B0`, the data group) and interprets the next valid response accordingly.
+
+### BMS generations observed
+
+Four DoCan ZZ 16 kWh packs were monitored in parallel: two older and two newer units. Service `51` (see below) reports two BMS generations:
+
+| | Older packs | Newer packs |
+|---|---|---|
+| BMS model | `16S200JC26` | `16S200JC35` |
+| BMS firmware | `STD05`, `LN10` | `ANZ09` |
+| BMS hardware | `T1` | `T1` |
+| Service `42` live layout | leading `00` byte, then SOC | starts directly with SOC |
+
+Raw status words also differ per generation. For example, the FET status word was `0x1023` on one generation and `0x23` on the other during normal operation. Compare raw status words only between packs running the same BMS firmware.
+
 ### Checksum
 
 The checksum is the 16-bit two's complement of the sum of every ASCII byte after `~`, up to but not including the checksum itself:
@@ -240,12 +256,21 @@ The checksum is appended as four uppercase hexadecimal characters.
 
 ### Confirmed requests
 
-| Purpose | Request or addressed command tail | Schedule used |
-|---|---|---:|
-| Discover BMS address | `~22004A500000FDA2\r` | Every 5 s until discovered |
-| Live telemetry | `42E00200` | Every 10 s |
-| Lifetime counters, group 04 | `B0600A000104FF00` | Every 60 s |
-| Manufacturer data | `510000` | Manual diagnostic button only |
+| CID2 | Purpose | Request or addressed command tail | Schedule used |
+|---|---|---|---:|
+| `50` | Discover BMS address | `~22004A500000FDA2\r` (broadcast, address `00`) | Every 5 s until discovered |
+| `42` | Live telemetry | `42E00200` | Every 10 s |
+| `51` | BMS hardware, firmware and model | `510000` | Once after every discovery, retried every 30 s until parsed |
+| `B0` | Data group 03: serial numbers, production date, manufacturer | `B0600A000103FF00` | Once after every discovery, retried every 30 s until parsed |
+| `B0` | Data group 04: lifetime counters | `B0600A000104FF00` | Every 60 s |
+
+Requests other than discovery are prefixed with `~22<address>4A` and followed by the checksum. The `B0` INFO field has this layout:
+
+```text
+00 | operation (01 = read) | data group | FF | 00
+```
+
+Only operation `01` (read) has been used. Data groups 03 and 04 are confirmed; other groups have not been read yet.
 
 Addressed frames are built at runtime. For example, with address `01` the live request is:
 
@@ -260,7 +285,34 @@ TX: ~22004AB0600A000104FF00FB6D\r
 RX: ~22004A00D030B0000104FF12445783C07AA8000005440000048D02D80266F38E\r
 ```
 
-The manufacturer-data command is included only as a diagnostic button. Its response fields have not yet been decoded.
+### Identity responses
+
+The service `51` payload contains three NUL-padded ASCII fields followed by bytes that are not yet understood:
+
+| Payload offset | Field |
+|---:|---|
+| 0–9 | BMS hardware, e.g. `T1` |
+| 10–19 | BMS firmware, e.g. `ANZ09` |
+| 20–29 | BMS model, e.g. `16S200JC35` |
+| 30 onward | 7 unknown bytes, logged only |
+
+The `B0` data group 03 response is recognized by `payload[0] = B0`, `payload[2] = 01`, `payload[3] = 03` and `payload[4] = FF`. It was confirmed on a DoCan ZZ 16S pack:
+
+| Payload offset | Field |
+|---:|---|
+| 0 | `B0` |
+| 1 | `03` |
+| 2 | Operation, `01` |
+| 3 | Data group, `03` |
+| 4 | `FF` |
+| 5 | Data length, observed `0x71` (113) |
+| 6–35 | Serial-number field 1, ASCII, NUL padded |
+| 36–65 | Serial-number field 2, ASCII, NUL padded |
+| 66–95 | Serial-number field 3, ASCII, NUL padded |
+| 96–98 | Production date as binary `YY MM DD`, e.g. `1A 06 1A` = 2026-06-26 |
+| 99 onward | Manufacturer code, ASCII, NUL padded |
+
+The meaning of the three separate serial-number fields has not been established. They are published as three diagnostic text entities.
 
 ## Automatic BMS-address discovery
 
@@ -286,14 +338,16 @@ All multi-byte values below are big-endian. `be16(i)` means a 16-bit unsigned va
 
 ### Fixed beginning
 
+Two layouts have been observed. Older BMS firmware (`STD05`, `LN10`) starts the payload with an extra `00` byte; newer firmware (`ANZ09`) starts directly with the state of charge. Let `b` be the start offset: `b = 1` for the older layout and `b = 0` for the newer one.
+
 | Payload offset | Field | Scale |
 |---:|---|---:|
-| 1–2 | State of charge | `be16(1) / 100` % |
-| 3–4 | Pack voltage | `be16(3) / 100` V |
-| 5 | Cell count `N` | 1–16 |
-| 6 onward | `N` cell voltages | each `be16 / 1000` V |
+| `b + 0` | State of charge | `be16 / 100` % |
+| `b + 2` | Pack voltage | `be16 / 100` V |
+| `b + 4` | Cell count `N` | 1–16 |
+| `b + 5` onward | `N` cell voltages | each `be16 / 1000` V |
 
-Let `p = 6 + 2N`, immediately after the cell voltages:
+Let `p = b + 5 + 2N`, immediately after the cell voltages:
 
 | Relative offset | Field | Scale |
 |---:|---|---:|
@@ -321,7 +375,34 @@ Power is calculated locally as voltage × current. The operating state is derive
 - discharging below −0.10 A;
 - idle between those thresholds.
 
+### Selecting the layout
+
+The configuration does not rely on the firmware version to pick `b`. It evaluates both candidates and accepts a candidate only if:
+
+- state of charge, pack voltage and cell count are in plausible ranges;
+- every cell voltage is between 2.000 and 4.000 V;
+- the sum of the cell voltages matches the pack voltage within 0.5 V.
+
+If both candidates fit, the one with the smallest deviation is used. If neither fits, the frame is counted as invalid.
+
+An earlier version tried `b = 1` first and accepted it on range checks alone. On `ANZ09` packs a one-byte-shifted read can pass those checks when the low byte of the state of charge is small and the low byte of the voltage falls in a narrow range; the cell count is then read from the high byte of cell 1 (`0x0C` or `0x0D`). Such frames usually failed later at the temperature-count check, and rarely published wrong values. The symptom was about 0.6–0.7 % invalid frames (roughly 1 in 150) on `ANZ09` packs only, occurring in clusters because state of charge and voltage change slowly. A simulation over 20,000 random `ANZ09` frames reproduced 0.61 %. After switching to the cell-sum check, all four packs reported 0 invalid frames over more than 22,000 frames each.
+
+### Status words
+
 The final part of the live payload contains status fields. Voltage, current, temperature, alarm, FET, balance-low, balance-high, machine and I/O status are exposed as raw diagnostic entities. Their vendor-specific individual bits have not yet been confidently decoded.
+
+Ten-second logs over one week show this behaviour of the voltage status word. These meanings are observations, not vendor-confirmed definitions:
+
+| Bit | Set | Cleared | Likely meaning |
+|---|---|---|---|
+| `0x10` | Highest cell about 3.55–3.58 V (both generations) | Below about 3.45 V | Cell over-voltage warning |
+| `0x01` | At the top of charge (seen on `ANZ09` only) | Below about 3.40 V | Charging blocked / pack full |
+
+A value of `0x11` means both bits are set. While `0x01` is set, the pack reports exactly 0.00 A and neither charges nor discharges, even with a small load on the bus.
+
+### Environment temperature as a balancing indicator
+
+On `ANZ09` packs, the environment temperature rises from about 29 °C to 34–36 °C whenever the cell delta exceeds about 20–30 mV, and falls back when the delta is small again. The correlation with the cell delta was 0.71 and 0.77 on two packs. This happens both on the voltage plateau and at the top of charge, which suggests that the active balancer starts on cell delta regardless of cell voltage. Until the balance status words are decoded, this temperature is a useful indirect "balancer running" signal.
 
 ## Decoded lifetime-counter payload
 
@@ -381,10 +462,14 @@ The generic configuration uses ESP-IDF and declares an 8 MB flash size, matching
 
 - UART debug captures complete frames ending in carriage return;
 - every response is checked for framing, hexadecimal validity, declared length and checksum before use;
-- malformed frames increment an invalid-frame counter;
+- malformed frames increment an invalid-frame counter and are logged at WARN level with a reason (`header`, `checksum`, `length mismatch`, `temperature count`, `no consistent live layout`, ...) and the raw frame;
 - valid frames increment a valid-frame counter and refresh BMS communication state;
+- requests are queued and sent one at a time with a 700 ms gap, so every response can be matched to the pending request;
 - live telemetry is requested every 10 seconds;
 - lifetime counters are requested every 60 seconds;
+- battery identity (services `51` and `B0` group 03) is read once after every discovery and retried every 30 seconds until both responses have been parsed, so a swapped pack is picked up again;
+- unexpected valid responses are logged as raw hexadecimal for analysis instead of being decoded;
+- diagnostic buttons refresh live telemetry, lifetime counters and battery info, restart discovery and reset the frame counters;
 - BMS communication becomes false after more than 30 seconds without a valid frame;
 - cell entities are throttled to 30 seconds to reduce Home Assistant recorder traffic;
 - aggregate pack values update on each live response;
@@ -403,6 +488,14 @@ docan_ap_password: "your-fallback-ap-password"
 
 Change `esphome.name` and `friendly_name` for each stick. Do not give two sticks the same ESPHome name.
 
+### Running several packs
+
+Four packs have been run with identical YAML on four sticks. Per pack, only `esphome.name`, `friendly_name`, `wifi.use_address` (when a fixed address is used), the fallback AP SSID and the two device-specific secrets differ.
+
+- Do not connect the USB ports of several packs to one ESP32 without per-channel galvanic isolation. The USB ground is most likely the pack's B−, and a pack with an open MOSFET can sit at a different potential.
+- The RS485 link between packs is a cleaner option for a single ESP32: a passive listener built with a 3.3 V auto-direction RS485 module whose TXD is tied high so that it never transmits. This has not been built yet.
+- Home Assistant `button-card` templates written with YAML `>-` folding must not contain `//` comments inside the JavaScript. Folding joins the lines, so the comment swallows the statement that follows it.
+
 ## What is confirmed and what remains open
 
 ### Confirmed
@@ -415,6 +508,10 @@ Change `esphome.name` and `friendly_name` for each stick. Do not give two sticks
 - working checksum and length validation;
 - BMS-address discovery;
 - live telemetry and lifetime-counter decoding;
+- both live-payload layouts (older `STD05`/`LN10` and newer `ANZ09` BMS firmware) and their automatic selection;
+- BMS hardware, firmware and model (service `51`);
+- serial-number fields, production date and manufacturer code (`B0` data group 03);
+- the `B0` read request layout for data groups 03 and 04;
 - automatic status-LED operation in ESPHome;
 - TCK through R25 to GPIO13 and TDO through R26 to GPIO15.
 
@@ -423,8 +520,10 @@ Change `esphome.name` and `friendly_name` for each stick. Do not give two sticks
 - exact purpose and common-node destination of D1;
 - exact purpose of D4/D38 and the surrounding GPIO2 circuit;
 - direct continuity confirmation of the TDI and TMS pads;
-- meanings of the individual raw status bits;
-- manufacturer-data response structure;
+- meanings of the individual raw status bits; only voltage-status bits `0x10` and `0x01` have observed behaviour so far;
+- the last 7 bytes of the service `51` response and the meaning of the three serial-number fields;
+- other `B0` data groups (thresholds and balancer settings are probably there) and the `B0` write operation (probably `02`, untested);
+- services such as `44`, `47` and `92` known from related protocols (untested);
 - whether other Docan PCB revisions have the same pinout and protocol layout.
 
 No BMS setting-changing or control commands were investigated. This work intentionally focuses on read-only monitoring.
@@ -447,6 +546,8 @@ Contributions that would help complete this reverse engineering include:
 - clear photographs of other board revisions;
 - continuity measurements for D1, D4, D38, TDI and TMS;
 - raw frames captured while specific alarms or balancing states are deliberately active;
+- a read-only scan of `B0` data groups `00`–`0F` with the raw replies logged. Look for likely cell thresholds such as `0D48` (3400 mV), `0DDE` (3550 mV) and `0E42` (3650 mV). Do not try write operations;
+- a passive RS485 listener that monitors several packs from one ESP32;
 - manufacturer documentation for the DR-1363 data groups;
 - confirmation of the YAML on Noon, YP, LN, Panda or other Docan pack families;
 - a safe decoding table for the raw voltage/current/temperature/alarm/FET/I/O status bits.
@@ -455,7 +556,7 @@ Additional leads from an independent analysis of the original `wifi_32` firmware
 
 - Check the high nibble of the four-character LENGTH word. It appears to be `(-sum of the three LENID nibbles) & 0x0F`. The current ESPHome parser checks the 12-bit payload length and frame checksum, but not this length checksum.
 - Capture a response to read-only command `0x84` and compare it with the working `0x42` live-telemetry response and simultaneous app values. The original firmware reportedly polls `0x84`, with a different, apparently fixed response layout. Do not assume the two responses are interchangeable.
-- Before experimenting with another long response, make the ESPHome parser distinguish response types explicitly. At present, an unrelated valid frame could otherwise be interpreted as `0x42` telemetry if its length and a few payload positions happen to match.
+- The ESPHome parser now matches each response to the pending request and only decodes `0x42`, `0x51` and `B0` group 03/04 responses; anything else is logged as raw hex. When adding another command, give it its own branch in the parser rather than relying on the live-telemetry decoder.
 - Investigate read-only commands `0x80`, `0x83` and `0x4D` separately, and compare their responses with the still-unknown status fields and BMS clock. Treat firmware-derived field names and scales as hypotheses until checked against captured frames.
 - Compare the original firmware's reported `0x50`, `0x51`, `0xA0`, `0xB0` and `0xB1` poll cycle with actual UART captures; record BMS model, firmware version and address for each capture.
 - Map the original firmware's two update paths without running an update. The active image contains distinct `BMS_OTA` and `sys_OTA` code and a shared-looking `download_upgrade_file`/`/drgk/web/binFile/` path. The BMS path includes `bms_bin_V%d.%d.%d.bin`, update-state persistence, and log messages `send reset cmd`, `send file info` (file size and packet count), and `send data %d`, plus timeout/read/write error handling. The stick path uses ESP-IDF's `esp_ota_write`, selects the next boot partition and restarts. Determine from disassembly or a passive capture how the update type selects a file and destination, whether the versioned BMS filename is remote or only local, and the exact BMS UART packet format, acknowledgements, integrity checks and recovery behavior. These strings establish the broad workflow, not a verified update procedure.
