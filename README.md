@@ -7,22 +7,28 @@
 
 ## Home Assistant result
 
-The decoded BMS data is published as native ESPHome entities. This dashboard combines both battery packs and shows state of charge, stored energy, individual cell voltages, cell delta, temperatures, capacity and state of health.
+The decoded BMS data is published as native ESPHome entities. This dashboard combines four battery packs, each with its own stick running the same YAML, and shows stored energy, state of charge, individual cell voltages, cell delta, temperatures, capacity and state of health.
 
-![Home Assistant overview showing two Docan battery packs](images/home-assistant-overview.png)
+![Home Assistant overview showing stored energy and state of charge of four Docan battery packs](images/home-assistant-overview.png)
+
+Each pack has its own cell and health cards. Packs 1 and 2 use the older BMS generation, packs 3 and 4 the newer `ANZ09` generation.
+
+![Cell voltages and health of packs 1 and 2](images/home-assistant-packs-1-2.png)
+
+![Cell voltages and health of packs 3 and 4](images/home-assistant-packs-3-4.png)
 
 ### Historical monitoring
 
-Because the values are normal Home Assistant entities, they can be recorded and compared over time. This makes it possible to monitor pack synchronization, cell-voltage drift, temperature differences and balancing behaviour.
+Because the values are normal Home Assistant entities, they can be recorded and compared over time. This makes it possible to monitor pack synchronization, cell-voltage drift, temperature differences and balancing behaviour. The temperature graph shows the environment temperature of the `ANZ09` packs rising while their cell delta is high, which is described under [Environment temperature as a balancing indicator](#environment-temperature-as-a-balancing-indicator).
 
-![Home Assistant history graphs for state of charge, temperatures and cell voltages](images/home-assistant-history.png)
+![Home Assistant history graphs for state of charge, temperatures, cell delta and cell voltages](images/home-assistant-history.png)
 
 <details>
 <summary>ESPHome and BMS diagnostics</summary>
 
-The diagnostic entities expose valid-frame counters, raw status words and the automatically discovered BMS address and pack number.
+The diagnostic entities expose BMS identity, valid-frame counters, raw status words and the automatically discovered BMS address and pack number. Serial numbers are redacted in this screenshot.
 
-![ESPHome diagnostics showing valid frames and BMS addressing](images/home-assistant-diagnostics.png)
+![Identity and BMS status of four packs, with serial numbers redacted](images/home-assistant-diagnostics.png)
 
 </details>
 
@@ -241,7 +247,7 @@ Four DoCan ZZ 16 kWh packs were monitored in parallel: two older and two newer u
 | BMS hardware | `T1` | `T1` |
 | Service `42` live layout | leading `00` byte, then SOC | starts directly with SOC |
 
-Raw status words also differ per generation. For example, the FET status word was `0x1023` on one generation and `0x23` on the other during normal operation. Compare raw status words only between packs running the same BMS firmware.
+Raw status words also differ per firmware. For example, during normal operation the FET status word was `0x1023` on the `STD05` and `ANZ09` packs and `0x23` on the `LN10` pack. Compare raw status words only between packs running the same BMS firmware.
 
 ### Checksum
 
