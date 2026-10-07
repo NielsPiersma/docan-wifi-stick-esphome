@@ -320,6 +320,8 @@ The `B0` data group 03 response is recognized by `payload[0] = B0`, `payload[2] 
 
 The meaning of the three separate serial-number fields has not been established. They are published as three diagnostic text entities.
 
+On all four packs, the first serial-number field had the form `AAAYYMMDDNNNN`: a three-letter prefix, a six-digit date and a four-digit number. The production date in bytes 96–98 was consistently two to five days after the date in that serial number. A plausible interpretation is that the serial number carries the cell or module date and the production date marks final pack assembly, but this has not been confirmed.
+
 ## Automatic BMS-address discovery
 
 Hard-coding the address worked during early tests but was not robust because different packs answered at addresses such as `00`, `01` and `02`.
