@@ -133,7 +133,7 @@ The conventional ESP32 serial-flashing connections are therefore available:
 
 Pull `BOOT` low while resetting with `EN` to enter the ROM download mode. Use a **3.3 V UART**, not 5 V logic. Do not connect two power sources to the board at the same time; if the stick is powered separately, connect only UART TX, RX and common ground.
 
-The USB-A form factor should not by itself be treated as proof that every signal on the board is standard USB data. I only characterized the UART and power-related behavior needed for this project.
+The USB-A form factor should not by itself be treated as proof that every signal on the board is standard USB data. The BMS serial link most likely uses the two middle pins of the USB-A plug, the positions of USB D− and D+, as TX and RX, at 3.3 V TTL level. Neither the pin assignment on the plug nor the signal level has been measured; only the ESP32 side (GPIO4/GPIO17) is confirmed. I only characterized the UART and power-related behavior needed for this project.
 
 ## How the LED pinout was found
 
@@ -219,20 +219,38 @@ Their exact purpose remains unresolved; they may be part of power, supervision o
 
 ## BMS serial protocol
 
-The BMS uses printable ASCII hexadecimal frames. Every captured frame starts with `~` and ends with carriage return (`\r`). A frame can be described as:
+The BMS uses printable ASCII hexadecimal frames in the DR-1363 format, which is similar to the Pylontech RS485 protocol. Every captured frame starts with `~` and ends with carriage return (`\r`):
 
-| Full-frame character position | Size | Meaning |
-|---:|---:|---|
-| 0 | 1 | Start marker `~` |
-| 1 | 2 | Protocol/version field, observed `22` |
-| 3 | 2 | BMS address |
-| 5 | 2 | Function family, observed `4A` |
-| 7 | 2 | Command in requests or return code in responses |
-| 9 | 4 | Length word |
-| 13 | variable | Payload as ASCII hex |
-| final 4 | 4 | ASCII checksum |
+```text
+~  VER  ADR  CID1  CID2/RTN  LENGTH  INFO...  CHKSUM  \r
+   22   xx   4A    xx        xxxx    ...      xxxx
+```
 
-The lower 12 bits of the four-character length word are the **number of ASCII payload characters**, not the number of decoded bytes. The count must therefore be even.
+| Full-frame character position | Size | Field | Meaning |
+|---:|---:|---|---|
+| 0 | 1 | `SOI` | Start marker `~` |
+| 1 | 2 | `VER` | Protocol version, always observed as `22` |
+| 3 | 2 | `ADR` | BMS address |
+| 5 | 2 | `CID1` | Device type, always observed as `4A` |
+| 7 | 2 | `CID2` / `RTN` | Command in requests, return code in responses |
+| 9 | 4 | `LENGTH` | 4-bit `LCHKSUM` + 12-bit `LENID` |
+| 13 | `LENID` | `INFO` | Payload as ASCII hex, two characters per byte |
+| final 4 | 4 | `CHKSUM` | ASCII checksum |
+
+`LENID`, the lower 12 bits of the length word, is the **number of ASCII payload characters**, not the number of decoded bytes. The count must therefore be even.
+
+The high nibble, `LCHKSUM`, is `(-(sum of the three LENID hex digits)) & 0x0F`. Every captured request and response matches this rule, for example:
+
+| `LENID` | `LENGTH` |
+|---|---|
+| `000` | `0000` |
+| `002` | `E002` |
+| `00A` | `600A` |
+| `030` | `D030` |
+
+The ESPHome configuration builds requests with a hard-coded, correct `LENGTH`. Its parser validates `LENID` and the frame checksum but does not yet check `LCHKSUM`.
+
+In the four-pack setup, the addresses `00`–`03` matched the packs' address DIP-switch settings, with the master pack at `00`.
 
 Responses carry the return code (`RTN`, `00` for success) at positions 7–8 instead of the command (`CID2`). A response therefore does not say which request it answers. The ESPHome configuration sends one request at a time, remembers the pending `CID2` (and, for `B0`, the data group) and interprets the next valid response accordingly.
 
@@ -369,7 +387,7 @@ Let `q = p + 7 + 2T`, immediately after the individual temperatures:
 
 | Relative offset | Field | Scale |
 |---:|---|---:|
-| `q + 0` | Pack current | signed `be16 / 100` A |
+| `q + 0` | Pack current | signed `be16 / 100` A, positive while charging |
 | `q + 2` | Pack internal resistance | `be16 / 10` mΩ |
 | `q + 4` | State of health | `be16` % |
 | `q + 6` | User-defined number | one byte, currently skipped |
@@ -397,7 +415,23 @@ An earlier version tried `b = 1` first and accepted it on range checks alone. On
 
 ### Status words
 
-The final part of the live payload contains status fields. Voltage, current, temperature, alarm, FET, balance-low, balance-high, machine and I/O status are exposed as raw diagnostic entities. Their vendor-specific individual bits have not yet been confidently decoded.
+The final part of the live payload contains status fields. Let `r = q + 13`, immediately after the cycle count:
+
+| Relative offset | Field | Size | Notes |
+|---:|---|---:|---|
+| `r + 0` | Voltage status | 2 | Raw bits, see below |
+| `r + 2` | Current status | 2 | Raw bits |
+| `r + 4` | Temperature status | 2 | Raw bits |
+| `r + 6` | Alarm status | 2 | Raw bits |
+| `r + 8` | FET status | 2 | Raw bits, differs per firmware |
+| `r + 10` | Four "low" status words | 8 | Unknown, skipped |
+| `r + 18` | Balance status low | 2 | Probably a per-cell bitmask, cells 1–16 |
+| `r + 20` | Balance status high | 2 | Probably a per-cell bitmask |
+| `r + 22` | Four "high" status words | 8 | Unknown, skipped |
+| `r + 30` | Machine status | 1 | Raw |
+| `r + 31` | I/O status | 2 | Raw |
+
+Voltage, current, temperature, alarm, FET, balance-low, balance-high, machine and I/O status are exposed as raw diagnostic entities. Their vendor-specific individual bits have not yet been confidently decoded. Whether the balance status words really show, per cell, which cell is being balanced has not been checked yet; if so, they would show directly what the balancer is doing.
 
 Ten-second logs over one week show this behaviour of the voltage status word. These meanings are observations, not vendor-confirmed definitions:
 
@@ -513,7 +547,7 @@ Four packs have been run with identical YAML on four sticks. Per pack, only `esp
 - serial programming UART on GPIO1/GPIO3;
 - LED1/2/3 on GPIO25/GPIO26/GPIO27 through R9/R10/R12;
 - common 3.3 V LED anodes and active-low drive;
-- working checksum and length validation;
+- working checksum and length validation, and the `LCHKSUM` rule of the length word;
 - BMS-address discovery;
 - live telemetry and lifetime-counter decoding;
 - both live-payload layouts (older `STD05`/`LN10` and newer `ANZ09` BMS firmware) and their automatic selection;
@@ -531,7 +565,9 @@ Four packs have been run with identical YAML on four sticks. Per pack, only `esp
 - meanings of the individual raw status bits; only voltage-status bits `0x10` and `0x01` have observed behaviour so far;
 - the last 7 bytes of the service `51` response and the meaning of the three serial-number fields;
 - other `B0` data groups (thresholds and balancer settings are probably there) and the `B0` write operation (probably `02`, untested);
-- services such as `44`, `47` and `92` known from related protocols (untested);
+- services such as `44` (alarm information), `47` (system parameters) and `92` (charge/discharge management), known from Pylontech-like protocols; these meanings are hypotheses and untested on this BMS;
+- whether the balance status words are a per-cell bitmask of the cells being balanced;
+- the USB-A pin assignment and signal level of the BMS serial link;
 - whether other Docan PCB revisions have the same pinout and protocol layout.
 
 No BMS setting-changing or control commands were investigated. This work intentionally focuses on read-only monitoring.
@@ -554,7 +590,8 @@ Contributions that would help complete this reverse engineering include:
 - clear photographs of other board revisions;
 - continuity measurements for D1, D4, D38, TDI and TMS;
 - raw frames captured while specific alarms or balancing states are deliberately active;
-- a read-only scan of `B0` data groups `00`–`0F` with the raw replies logged. Look for likely cell thresholds such as `0D48` (3400 mV), `0DDE` (3550 mV) and `0E42` (3650 mV). Do not try write operations;
+- a read-only scan of `B0` data groups `00`–`0F` (operation `01`) and of services `44` (alarm information in Pylontech-like protocols) and `47` (system parameters), with the raw replies logged. Look for likely cell thresholds such as `0D48` (3400 mV), `0DDE` (3550 mV) and `0E42` (3650 mV). Do not try write operations;
+- checking whether the balance status words are a per-cell bitmask, for example by showing them per cell on a dashboard while one or two cells are visibly being balanced at the top of charge;
 - a passive RS485 listener that monitors several packs from one ESP32;
 - manufacturer documentation for the DR-1363 data groups;
 - confirmation of the YAML on Noon, YP, LN, Panda or other Docan pack families;
@@ -562,7 +599,7 @@ Contributions that would help complete this reverse engineering include:
 
 Additional leads from an independent analysis of the original `wifi_32` firmware (not yet verified against captured responses from this pack):
 
-- Check the high nibble of the four-character LENGTH word. It appears to be `(-sum of the three LENID nibbles) & 0x0F`. The current ESPHome parser checks the 12-bit payload length and frame checksum, but not this length checksum.
+- The length checksum (`LCHKSUM`) suggested by the firmware analysis has since been confirmed on captured frames; see [BMS serial protocol](#bms-serial-protocol). Adding it to the ESPHome parser would be a small extra validation step.
 - Capture a response to read-only command `0x84` and compare it with the working `0x42` live-telemetry response and simultaneous app values. The original firmware reportedly polls `0x84`, with a different, apparently fixed response layout. Do not assume the two responses are interchangeable.
 - The ESPHome parser now matches each response to the pending request and only decodes `0x42`, `0x51` and `B0` group 03/04 responses; anything else is logged as raw hex. When adding another command, give it its own branch in the parser rather than relying on the live-telemetry decoder.
 - Investigate read-only commands `0x80`, `0x83` and `0x4D` separately, and compare their responses with the still-unknown status fields and BMS clock. Treat firmware-derived field names and scales as hypotheses until checked against captured frames.
