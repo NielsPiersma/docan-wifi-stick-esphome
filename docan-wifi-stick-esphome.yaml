@@ -7,6 +7,38 @@
 #   - DR-1363 service 0x42 every 10 seconds for live telemetry
 #   - DR-1363 service B0/data group 04 every 60 seconds for lifetime counters
 #
+#   - Battery identity once after every (re)discovery:
+#       DR-1363 service 51         -> BMS hardware, firmware and model
+#       DR-1363 service B0 group 03 -> serial numbers, production date, vendor
+#
+# Responses are matched to the request that is pending, because DR-1363
+# responses carry RTN instead of CID2 in their header.
+#
+# B0 group 03 layout (payload bytes, confirmed on a DoCan ZZ 16S):
+#   0      B0
+#   1      03
+#   2      01   operation
+#   3      03   data group
+#   4      FF
+#   5      data length (0x71 = 113)
+#   6..35  serial field 1 (ASCII, NUL padded, 30 bytes)
+#   36..65 serial field 2 (ASCII, NUL padded, 30 bytes)
+#   66..95 serial field 3 (ASCII, NUL padded, 30 bytes)
+#   96..98 date YY MM DD (binary, e.g. 1A 06 1A = 2026-06-26)
+#   99..   manufacturer code (ASCII, NUL padded)
+#
+# Service 51 layout: 10 bytes hardware, 10 bytes firmware, 10 bytes model,
+# followed by 7 bytes that are still unknown (logged only).
+#
+# Changes in this revision:
+#   - Live layout (with or without leading 00 byte) is now selected by checking
+#     that the cell voltages add up to the pack voltage. The previous range
+#     check could accept a one-byte misaligned frame on newer firmware (ANZ09),
+#     which then failed later or, rarely, published wrong values.
+#   - Every invalid frame is logged with a reason and the raw frame.
+#   - Frames for which no live layout fits are now counted as invalid
+#     instead of being ignored silently.
+#
 # Required secrets:
 #   wifi_ssid
 #   wifi_password
@@ -67,6 +99,30 @@ globals:
     restore_value: false
     initial_value: "0"
 
+  # CID2 of the request whose response is expected next (0 = none).
+  - id: docan_pending_cid2
+    type: uint8_t
+    restore_value: false
+    initial_value: "0x00"
+
+  # B0 data group of the pending request (only meaningful for CID2 B0).
+  - id: docan_pending_group
+    type: uint8_t
+    restore_value: false
+    initial_value: "0x00"
+
+  # Set once both identity responses (51 and B0/03) have been parsed.
+  # Cleared on rediscovery so a swapped pack is picked up again.
+  - id: docan_identity_51_ok
+    type: bool
+    restore_value: false
+    initial_value: "false"
+
+  - id: docan_identity_b003_ok
+    type: bool
+    restore_value: false
+    initial_value: "false"
+
 uart:
   id: docan_uart
   tx_pin: GPIO4
@@ -93,15 +149,28 @@ uart:
             return;
           }
 
-          auto mark_invalid = [&]() {
+          // Count an invalid frame and log why, together with the raw bytes.
+          auto mark_invalid = [&](const char *reason) {
             id(docan_invalid_frame_count)++;
             id(docan_invalid_frames).publish_state(id(docan_invalid_frame_count));
+            std::string raw;
+            for (const uint8_t b : bytes) {
+              if (b >= 0x20 && b < 0x7F) {
+                raw += static_cast<char>(b);
+              } else {
+                char h[5];
+                snprintf(h, sizeof(h), "<%02X>", b);
+                raw += h;
+              }
+            }
+            ESP_LOGW("docan", "Invalid frame (%s), pending %02X/%02X: %s", reason,
+                     id(docan_pending_cid2), id(docan_pending_group), raw.c_str());
           };
 
           std::string frame(bytes.begin(), bytes.end());
           const size_t start = frame.find('~');
           if (start == std::string::npos) {
-            mark_invalid();
+            mark_invalid("no start character");
             return;
           }
           if (start != 0) {
@@ -130,19 +199,19 @@ uart:
           };
 
           if (frame.size() < 17 || frame[0] != '~' || frame.substr(1, 2) != "22") {
-            mark_invalid();
+            mark_invalid("header");
             return;
           }
 
           uint32_t response_address = 0;
           if (!parse_hex(3, 2, response_address) || frame.substr(5, 2) != "4A") {
-            mark_invalid();
+            mark_invalid("address or CID1");
             return;
           }
 
           uint32_t length_word = 0;
           if (!parse_hex(9, 4, length_word)) {
-            mark_invalid();
+            mark_invalid("length word");
             return;
           }
 
@@ -150,13 +219,13 @@ uart:
           const size_t checksum_position = 13 + payload_chars;
           if ((payload_chars & 1U) != 0 || payload_chars > 1024 ||
               frame.size() != checksum_position + 4) {
-            mark_invalid();
+            mark_invalid("length mismatch");
             return;
           }
 
           uint32_t expected_checksum = 0;
           if (!parse_hex(checksum_position, 4, expected_checksum)) {
-            mark_invalid();
+            mark_invalid("checksum field");
             return;
           }
 
@@ -169,7 +238,7 @@ uart:
           if (calculated_checksum != static_cast<uint16_t>(expected_checksum)) {
             ESP_LOGW("docan", "Checksum mismatch: expected %04X, calculated %04X",
                      static_cast<unsigned>(expected_checksum), calculated_checksum);
-            mark_invalid();
+            mark_invalid("checksum");
             return;
           }
 
@@ -179,7 +248,7 @@ uart:
             const int high = hex_nibble(frame[13 + i]);
             const int low = hex_nibble(frame[13 + i + 1]);
             if (high < 0 || low < 0) {
-              mark_invalid();
+              mark_invalid("payload hex");
               return;
             }
             payload.push_back(static_cast<uint8_t>((high << 4) | low));
@@ -191,17 +260,115 @@ uart:
           id(docan_valid_frame_count)++;
           id(docan_valid_frames).publish_state(id(docan_valid_frame_count));
 
+          const std::string rtn = frame.substr(7, 2);
+          const uint8_t pending = id(docan_pending_cid2);
+          const uint8_t pending_group = id(docan_pending_group);
+          id(docan_pending_cid2) = 0;
+          id(docan_pending_group) = 0;
+
           // A successful zero-length response to our broadcast discovery
           // carries the BMS address in characters 3..4. Other replies from
           // these BMS units may use 00 in their response header, so discovery
           // is deliberately the only frame used to learn the address.
-          if (payload.empty() && frame.substr(7, 2) == "00") {
+          if (payload.empty() && rtn == "00" && pending == 0) {
             id(docan_bms_address) = static_cast<uint8_t>(response_address);
             id(docan_detected_bms_address).publish_state(response_address);
             id(docan_detected_pack_number).publish_state(response_address + 1U);
             ESP_LOGI("docan", "BMS discovered at address %02X (pack %u)",
                      static_cast<unsigned>(response_address),
                      static_cast<unsigned>(response_address + 1U));
+            return;
+          }
+
+          if (rtn != "00") {
+            ESP_LOGW("docan", "BMS returned RTN %s for CID2 %02X group %02X",
+                     rtn.c_str(), pending, pending_group);
+            return;
+          }
+
+          // Read a NUL-padded ASCII field and keep printable characters only.
+          auto ascii_field = [&](size_t offset, size_t length) -> std::string {
+            std::string out;
+            for (size_t i = offset; i < offset + length && i < payload.size(); i++) {
+              const uint8_t b = payload[i];
+              if (b == 0x00) break;
+              if (b >= 0x20 && b < 0x7F) out += static_cast<char>(b);
+            }
+            while (!out.empty() && out.back() == ' ') out.pop_back();
+            return out;
+          };
+
+          // DR-1363 service 51: BMS hardware, firmware and model.
+          if (pending == 0x51) {
+            if (payload.size() < 30) {
+              mark_invalid("service 51 too short");
+              return;
+            }
+            const std::string hardware = ascii_field(0, 10);
+            const std::string firmware = ascii_field(10, 10);
+            const std::string model = ascii_field(20, 10);
+            id(docan_bms_hardware).publish_state(hardware);
+            id(docan_bms_firmware).publish_state(firmware);
+            id(docan_bms_model).publish_state(model);
+
+            std::string tail;
+            for (size_t i = 30; i < payload.size(); i++) {
+              char h[4];
+              snprintf(h, sizeof(h), "%02X ", payload[i]);
+              tail += h;
+            }
+            ESP_LOGI("docan", "BMS info: hardware '%s', firmware '%s', model '%s', extra [%s]",
+                     hardware.c_str(), firmware.c_str(), model.c_str(), tail.c_str());
+            id(docan_identity_51_ok) = true;
+            return;
+          }
+
+          // DR-1363 service B0, data group 03: serial numbers and production data.
+          if (pending == 0xB0 && pending_group == 0x03) {
+            if (payload.size() < 101 || payload[0] != 0xB0 || payload[2] != 0x01 ||
+                payload[3] != 0x03 || payload[4] != 0xFF) {
+              mark_invalid("B0/03 layout");
+              return;
+            }
+            const std::string serial_1 = ascii_field(6, 30);
+            const std::string serial_2 = ascii_field(36, 30);
+            const std::string serial_3 = ascii_field(66, 30);
+            const uint8_t year = payload[96];
+            const uint8_t month = payload[97];
+            const uint8_t day = payload[98];
+            const std::string manufacturer = ascii_field(99, payload.size() - 99);
+
+            id(docan_serial_number).publish_state(serial_1);
+            id(docan_serial_number_2).publish_state(serial_2);
+            id(docan_serial_number_3).publish_state(serial_3);
+            id(docan_manufacturer).publish_state(manufacturer);
+
+            if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+              char date[11];
+              snprintf(date, sizeof(date), "%04u-%02u-%02u",
+                       2000U + year, static_cast<unsigned>(month), static_cast<unsigned>(day));
+              id(docan_production_date).publish_state(date);
+            }
+
+            ESP_LOGI("docan", "Serial numbers: '%s' / '%s' / '%s', date %02u-%02u-%02u, vendor '%s'",
+                     serial_1.c_str(), serial_2.c_str(), serial_3.c_str(),
+                     year, month, day, manufacturer.c_str());
+            id(docan_identity_b003_ok) = true;
+            return;
+          }
+
+          const bool is_live = pending == 0x42;
+          const bool is_lifetime = pending == 0xB0 && pending_group == 0x04;
+          if (!is_live && !is_lifetime) {
+            // Unexpected or unsolicited response: log it for analysis.
+            std::string hex;
+            for (const uint8_t b : payload) {
+              char h[3];
+              snprintf(h, sizeof(h), "%02X", b);
+              hex += h;
+            }
+            ESP_LOGD("docan", "Unhandled response (pending %02X/%02X): %s",
+                     pending, pending_group, hex.c_str());
             return;
           }
 
@@ -220,32 +387,74 @@ uart:
           };
 
           // DR-1363 service B0, operation 01, data group 04: lifetime counters.
-          if (payload.size() >= 24 && payload[0] == 0xB0 && payload[2] == 0x01 &&
-              payload[3] == 0x04 && payload[4] == 0xFF) {
-            id(docan_design_capacity).publish_state(be16(10) / 100.0f);
-            // This DoCan firmware stores lifetime capacity in 0.1 Ah units.
-            // The scale is confirmed by the matching lifetime-energy values.
-            id(docan_lifetime_charge_ah).publish_state(be32(12) / 10.0f);
-            id(docan_lifetime_discharge_ah).publish_state(be32(16) / 10.0f);
-            id(docan_lifetime_charge_energy).publish_state(be16(20) / 100.0f);
-            id(docan_lifetime_discharge_energy).publish_state(be16(22) / 100.0f);
+          if (is_lifetime) {
+            if (payload.size() >= 24 && payload[0] == 0xB0 && payload[2] == 0x01 &&
+                payload[3] == 0x04 && payload[4] == 0xFF) {
+              id(docan_design_capacity).publish_state(be16(10) / 100.0f);
+              // This DoCan firmware stores lifetime capacity in 0.1 Ah units.
+              // The scale is confirmed by the matching lifetime-energy values.
+              id(docan_lifetime_charge_ah).publish_state(be32(12) / 10.0f);
+              id(docan_lifetime_discharge_ah).publish_state(be32(16) / 10.0f);
+              id(docan_lifetime_charge_energy).publish_state(be16(20) / 100.0f);
+              id(docan_lifetime_discharge_energy).publish_state(be16(22) / 100.0f);
+            } else {
+              mark_invalid("B0/04 layout");
+            }
             return;
           }
 
           // DR-1363 service 42: dynamic live telemetry structure.
-          if (payload.size() < 66 || payload[5] == 0 || payload[5] > 16) {
+          //
+          // Two live-frame layouts have been observed in DoCan packs:
+          //   older firmware: 00 | SOC | voltage | cell count | ...
+          //   newer firmware:      SOC | voltage | cell count | ...
+          //
+          // The layout is selected by checking that the cell voltages add up
+          // to the pack voltage. A one-byte misalignment can pass simple range
+          // checks (it did on ANZ09 firmware), but practically never this
+          // consistency check. Returns the deviation in volts, or -1 if the
+          // layout does not fit.
+          auto live_layout_score = [&](size_t base) -> float {
+            if (payload.size() < base + 5U) return -1.0f;
+            const uint16_t soc_raw = be16(base);
+            const uint16_t voltage_raw = be16(base + 2U);
+            const uint8_t cells = payload[base + 4U];
+            if (soc_raw > 10000U || voltage_raw < 1000U || voltage_raw > 10000U ||
+                cells < 1U || cells > 16U) {
+              return -1.0f;
+            }
+            if (payload.size() < base + 5U + 2U * cells) return -1.0f;
+            float sum = 0.0f;
+            for (uint8_t i = 0; i < cells; i++) {
+              const uint16_t mv = be16(base + 5U + 2U * i);
+              if (mv < 2000U || mv > 4000U) return -1.0f;  // LiFePO4 cell range
+              sum += mv / 1000.0f;
+            }
+            const float diff = std::fabs(sum - voltage_raw / 100.0f);
+            return diff < 0.5f ? diff : -1.0f;
+          };
+
+          const float score_0 = live_layout_score(0U);
+          const float score_1 = live_layout_score(1U);
+          size_t live_base = 0;
+          if (score_0 >= 0.0f && (score_1 < 0.0f || score_0 <= score_1)) {
+            live_base = 0U;
+          } else if (score_1 >= 0.0f) {
+            live_base = 1U;
+          } else {
+            mark_invalid("no consistent live layout");
             return;
           }
 
-          const uint8_t cell_count = payload[5];
-          size_t position = 6;
+          const uint8_t cell_count = payload[live_base + 4U];
+          size_t position = live_base + 5U;
           if (payload.size() < position + (2U * cell_count) + 7U) {
-            mark_invalid();
+            mark_invalid("live frame too short for cells");
             return;
           }
 
-          const float soc = be16(1) / 100.0f;
-          const float voltage = be16(3) / 100.0f;
+          const float soc = be16(live_base) / 100.0f;
+          const float voltage = be16(live_base + 2U) / 100.0f;
           float cell_values[16] = {};
           float cell_min = 100.0f;
           float cell_max = 0.0f;
@@ -277,7 +486,7 @@ uart:
 
           const uint8_t temperature_count = payload[position++];
           if (temperature_count > 16 || payload.size() < position + (2U * temperature_count) + 13U) {
-            mark_invalid();
+            mark_invalid("temperature count");
             return;
           }
 
@@ -401,9 +610,11 @@ script:
 
   # Build every addressed request at runtime. The checksum is the 16-bit
   # two's-complement of the sum of all ASCII characters between '~' and it.
+  # Requests are serialised (queued + delay) so that each response can be
+  # matched to the request that is pending.
   - id: docan_send_addressed_command
     mode: queued
-    max_runs: 5
+    max_runs: 20
     parameters:
       command_tail: string
     then:
@@ -411,6 +622,14 @@ script:
           if (id(docan_bms_address) == 0xFF) {
             ESP_LOGD("docan", "Command postponed: BMS address is not known yet");
             return;
+          }
+
+          id(docan_pending_cid2) = static_cast<uint8_t>(
+              strtoul(command_tail.substr(0, 2).c_str(), nullptr, 16));
+          id(docan_pending_group) = 0;
+          if (id(docan_pending_cid2) == 0xB0 && command_tail.size() >= 12) {
+            id(docan_pending_group) = static_cast<uint8_t>(
+                strtoul(command_tail.substr(10, 2).c_str(), nullptr, 16));
           }
 
           char address[3];
@@ -428,6 +647,17 @@ script:
           snprintf(checksum_text, sizeof(checksum_text), "%04X", checksum);
           const std::string request = "~" + body + checksum_text + "\r";
           id(docan_uart).write_str(request.c_str());
+      - delay: 700ms
+
+  # Broadcast discovery. Clears the pending request so the empty reply is
+  # recognised as a discovery response.
+  - id: docan_discovery
+    mode: single
+    then:
+      - lambda: |-
+          id(docan_pending_cid2) = 0;
+          id(docan_pending_group) = 0;
+          id(docan_uart).write_str("~22004A500000FDA2\r");
 
 interval:
   # LED 1: short heartbeat pulse to show that the ESP32 firmware is running.
@@ -459,9 +689,7 @@ interval:
           condition:
             lambda: return id(docan_bms_address) == 0xFF;
           then:
-            - uart.write:
-                id: docan_uart
-                data: "~22004A500000FDA2\r"
+            - script.execute: docan_discovery
 
   - interval: 10s
     startup_delay: 4s
@@ -477,6 +705,25 @@ interval:
           id: docan_send_addressed_command
           command_tail: "B0600A000104FF00"
 
+  # Battery identity: read once after (re)discovery, retried every 30 s
+  # until both responses have been parsed.
+  - interval: 30s
+    startup_delay: 12s
+    then:
+      - if:
+          condition:
+            lambda: |-
+              return id(docan_bms_address) != 0xFF &&
+                     !(id(docan_identity_51_ok) && id(docan_identity_b003_ok));
+          then:
+            - lambda: |-
+                if (!id(docan_identity_51_ok)) {
+                  id(docan_send_addressed_command)->execute(std::string("510000"));
+                }
+                if (!id(docan_identity_b003_ok)) {
+                  id(docan_send_addressed_command)->execute(std::string("B0600A000103FF00"));
+                }
+
   - interval: 10s
     startup_delay: 15s
     then:
@@ -487,6 +734,8 @@ interval:
             if (id(docan_bms_address) != 0xFF) {
               ESP_LOGW("docan", "BMS timeout; restarting address discovery");
               id(docan_bms_address) = 0xFF;
+              id(docan_identity_51_ok) = false;
+              id(docan_identity_b003_ok) = false;
             }
           }
 
@@ -511,17 +760,28 @@ button:
     name: "BMS discovery"
     entity_category: diagnostic
     on_press:
-      - uart.write:
-          id: docan_uart
-          data: "~22004A500000FDA2\r"
+      - script.execute: docan_discovery
 
   - platform: template
-    name: "BMS manufacturer data"
+    name: "Refresh battery info"
     entity_category: diagnostic
     on_press:
       - script.execute:
           id: docan_send_addressed_command
           command_tail: "510000"
+      - script.execute:
+          id: docan_send_addressed_command
+          command_tail: "B0600A000103FF00"
+
+  - platform: template
+    name: "Reset frame counters"
+    entity_category: diagnostic
+    on_press:
+      - lambda: |-
+          id(docan_valid_frame_count) = 0;
+          id(docan_invalid_frame_count) = 0;
+          id(docan_valid_frames).publish_state(0);
+          id(docan_invalid_frames).publish_state(0);
 
 output:
   # The USB-side anodes of all three LEDs are connected to 3.3 V.
@@ -561,6 +821,54 @@ text_sensor:
     id: docan_operating_state
     name: "Operating state"
     icon: mdi:battery-sync
+
+  - platform: template
+    id: docan_serial_number
+    name: "Serial number"
+    icon: mdi:barcode
+    entity_category: diagnostic
+
+  - platform: template
+    id: docan_serial_number_2
+    name: "Serial number field 2"
+    icon: mdi:barcode
+    entity_category: diagnostic
+
+  - platform: template
+    id: docan_serial_number_3
+    name: "Serial number field 3"
+    icon: mdi:barcode
+    entity_category: diagnostic
+
+  - platform: template
+    id: docan_production_date
+    name: "Production date"
+    icon: mdi:calendar
+    entity_category: diagnostic
+
+  - platform: template
+    id: docan_manufacturer
+    name: "Manufacturer code"
+    icon: mdi:factory
+    entity_category: diagnostic
+
+  - platform: template
+    id: docan_bms_model
+    name: "BMS model"
+    icon: mdi:chip
+    entity_category: diagnostic
+
+  - platform: template
+    id: docan_bms_firmware
+    name: "BMS firmware"
+    icon: mdi:chip
+    entity_category: diagnostic
+
+  - platform: template
+    id: docan_bms_hardware
+    name: "BMS hardware"
+    icon: mdi:chip
+    entity_category: diagnostic
 
 sensor:
   - platform: template
