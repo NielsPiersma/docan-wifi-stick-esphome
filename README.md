@@ -570,7 +570,7 @@ Four packs have been run with identical YAML on four sticks. Per pack, only `esp
 - the USB-A pin assignment and signal level of the BMS serial link;
 - whether other Docan PCB revisions have the same pinout and protocol layout.
 
-No BMS setting-changing or control commands were investigated. This work intentionally focuses on read-only monitoring.
+The ESPHome configuration in this repository sends no BMS setting-changing or control commands; it is read-only. The original firmware's own update mechanism was reconstructed separately by static analysis and is documented, unverified, under [Original firmware update mechanism](#original-firmware-update-mechanism-static-analysis-reconstruction-not-yet-verified).
 
 ## Safety and reproducibility notes
 
@@ -582,6 +582,71 @@ No BMS setting-changing or control commands were investigated. This work intenti
 - Preserve a copy of the original firmware if you have a reliable way to read it before erasing.
 - Expect other PCB revisions to differ; verify traces instead of relying only on the board's physical resemblance.
 - Test the configuration on the bench before depending on it for alarms or protection. The BMS itself, not ESPHome or Home Assistant, must remain responsible for battery protection.
+
+## Original firmware update mechanism (static-analysis reconstruction, not yet verified)
+
+> **Warning — unverified, and physically risky.** Everything in this section was reconstructed by statically disassembling a single original-firmware dump. It describes only the Wi-Fi stick's side of the process; the BMS bootloader that receives the firmware runs on a separate microcontroller whose acceptance, integrity and recovery rules are not in this dump. None of it has been confirmed against a live update or a bus capture. The BMS firmware governs the pack's cell protection, so a wrong or interrupted flash can brick a pack or disable its safety limits — a genuine fire risk with LiFePO4. Treat this as a map for further verification, not a procedure to run blind, and only ever use a firmware image Docan supplies for your exact BMS model and version.
+
+This was investigated to answer a practical question: can a Docan-supplied BMS firmware be applied locally, without depending on the vendor's cloud server?
+
+### Two update paths, selected by `file_type`
+
+The original `wifi_32` image contains two independent update routines, chosen by a single `file_type` field in the downloaded file's 512-byte header:
+
+- `file_type == 1` → **stick self-update**: standard ESP-IDF OTA (`esp_ota_begin`/`write`/`end`, select next boot partition, restart). The downloaded image is checked against a 16-byte (MD5-sized) hash in its header; there is no code signature or application-level secure-boot check.
+- `file_type == 2` → **BMS update**: the image is written to the stick's local filesystem and then streamed to the BMS over the service UART by a separate task. This is the path relevant to updating the pack.
+
+### The cloud is only a delivery mechanism
+
+The download stage fetches a file over **plain FTP** (no TLS) from a server whose IP address is provisioned at runtime — it is not baked into the image — from a fixed directory, using a username and password that are hard-coded in the firmware. The firmware then writes the file to local flash and runs the update from there.
+
+Because the actual flashing reads from local files, the download server can be replaced by any local source. The hard-coded FTP credentials look like a shared production account; their values are deliberately not reproduced here, and if they are indeed shared across devices that is something the manufacturer should address.
+
+### Local files
+
+For `file_type == 2` the stick stores two files in its SPIFFS `storage` partition (flash offset `0x2f0000`, mounted at `/data`):
+
+- `/data/bms_bin_V<major>.<minor>.<patch>.bin` — the raw BMS image. On the send path the stick opens the **first** file in `/data` whose name contains the substring `bms_bin`; the version digits in the name are not checked when reading.
+- `/data/bms_hdr.bin` — a 24-byte header: version in bytes 0–3, **image size as a little-endian `uint32` in bytes 4–7**, and a 16-byte MD5 in bytes 8–23. The size field is what drives the packet count (size ÷ 1024). The MD5 is verified at download time but is *not* re-checked on the send path.
+
+A cloud-free update therefore comes down to getting a correct image plus header onto `/data` — either by pointing the stick at a local FTP server, or by writing a prepared SPIFFS image to the `storage` partition over USB-serial — and then triggering the BMS update, letting the stock, vendor-tested state machine do the flashing. That is the lowest-risk route, because the BMS receives exactly the bytes the vendor intended.
+
+### BMS UART frame format
+
+The stick talks to the BMS bootloader with one fixed frame:
+
+```text
+7F  AA  C3 C2 C1 C0  LH LL  <payload>  KH KL  0D
+```
+
+| Field | Bytes | Meaning |
+|---|---|---|
+| Start | `7F` | start marker |
+| Address | `AA` | BMS address (runtime value, echoed back by the BMS) |
+| Command | 4 | command word, big-endian |
+| Length | 2 | payload length, big-endian |
+| Payload | *length* | depends on the message type |
+| Checksum | 2 | CRC-16/MODBUS (init `0xFFFF`, polynomial `0xA001`) over start … payload |
+| End | `0D` | terminator |
+
+The four message types, sent in order:
+
+| Step | Command (on the wire) | Payload |
+|---|---|---|
+| Reset (sent 3×) | `10 01 F0 7E` | `A5 5A` |
+| File info | `10 02 F0 7E` | packet size `04 00` + packet count, both big-endian |
+| Data (per packet) | `10 03 F0 7E` | `00` + 1-based packet number + 1024 firmware bytes |
+| End | `10 04 7E F0` | `45 4E 44 00` (`"END"` followed by `00`) |
+
+The BMS replies with the same frame format and a response word `10 0X 7E F0` (X = 1–4); a valid reply advances the state machine. There is no separate acknowledgement byte. A missing or invalid reply increments a retry counter (abort after 10), and a watchdog aborts the whole update after about 30 seconds. On success the stick records completion in NVS (namespace `OTA_DATE`, key `update_state`), so an interrupted update is detected on the next boot.
+
+### What still needs verifying before trusting this
+
+- The on-wire **CRC byte order**: the builder emits the two CRC bytes high-byte-first, which is the reverse of the usual Modbus-RTU low-byte-first order. Confirm against a real capture before building frames by hand.
+- The **BMS-side bootloader**: what it validates, how it signals success or failure, and how it recovers from an interrupted transfer — none of which is present in the stick firmware.
+- Whether `/data/bms_hdr.bin` is strictly required at send time, and the meaning of its remaining header bytes.
+- The exact per-packet pacing and the units of the receive timeout.
+- The safest way to trigger the BMS update on a stick that otherwise runs ESPHome — the stock state machine exists only in the original firmware, so this most likely means temporarily reflashing the original image rather than reimplementing the flasher.
 
 ## Useful follow-up work for the community
 
@@ -604,10 +669,10 @@ Additional leads from an independent analysis of the original `wifi_32` firmware
 - The ESPHome parser now matches each response to the pending request and only decodes `0x42`, `0x51` and `B0` group 03/04 responses; anything else is logged as raw hex. When adding another command, give it its own branch in the parser rather than relying on the live-telemetry decoder.
 - Investigate read-only commands `0x80`, `0x83` and `0x4D` separately, and compare their responses with the still-unknown status fields and BMS clock. Treat firmware-derived field names and scales as hypotheses until checked against captured frames.
 - Compare the original firmware's reported `0x50`, `0x51`, `0xA0`, `0xB0` and `0xB1` poll cycle with actual UART captures; record BMS model, firmware version and address for each capture.
-- Map the original firmware's two update paths without running an update. The active image contains distinct `BMS_OTA` and `sys_OTA` code and a shared-looking `download_upgrade_file`/`/drgk/web/binFile/` path. The BMS path includes `bms_bin_V%d.%d.%d.bin`, update-state persistence, and log messages `send reset cmd`, `send file info` (file size and packet count), and `send data %d`, plus timeout/read/write error handling. The stick path uses ESP-IDF's `esp_ota_write`, selects the next boot partition and restarts. Determine from disassembly or a passive capture how the update type selects a file and destination, whether the versioned BMS filename is remote or only local, and the exact BMS UART packet format, acknowledgements, integrity checks and recovery behavior. These strings establish the broad workflow, not a verified update procedure.
+- Verify the reconstructed update mechanism documented under [Original firmware update mechanism](#original-firmware-update-mechanism-static-analysis-reconstruction-not-yet-verified). The most useful contributions are a passive UART capture of a real BMS update (to confirm the frame format and especially the CRC byte order), and details of the BMS-side bootloader's integrity checks and recovery behaviour, which are not in the stick firmware.
 - Investigate the factory-looking Wi-Fi configuration found in one original firmware dump's NVS partition (SSID `DR_New_Energy`, with a preconfigured password). Determine whether the stick joins that network as a client or creates its own access point, and whether the entry is only a leftover production/test setting. This single dump does not prove every unit ships with the same credentials, establish the Wi-Fi mode, or show that a user's network was never configured. If a working credential is shared across production devices, the manufacturer should address it.
 
-The original firmware also appears to support remote settings and BMS firmware updates. Those write paths are outside the scope of this read-only project. Do not publish a raw flash dump: its NVS partition may contain Wi-Fi credentials or other device-specific data.
+The original firmware also appears to support remote settings changes, which remain outside the scope of this project; its BMS and stick update paths are reconstructed, unverified, in the section above. Do not publish a raw flash dump: its NVS partition may contain Wi-Fi credentials or other device-specific data.
 
 When sharing captures, remove Wi-Fi credentials, API keys, MAC addresses and any serial numbers you consider private.
 
