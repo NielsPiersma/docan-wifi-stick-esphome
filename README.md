@@ -1,6 +1,6 @@
 # Reverse-engineering the Docan DR-WIFI-04-V2 battery Wi-Fi stick for ESPHome
 
-**Status:** working prototype, documented 27 September 2026  
+**Status:** working prototype, documented 27 September 2026, status words and BMS parameters added 10 October 2026  
 **Board tested:** `DR-WIFI-04-V2`, PCB date `2024-05-06`  
 **Module:** Espressif ESP32-WROOM-32E  
 **Battery tested:** Docan/DoCan ZZ 16-cell LiFePO4 packs (BMS firmware `STD05`, `LN10` and `ANZ09`) using the ASCII BMS protocol described below
@@ -44,14 +44,16 @@ The configuration currently provides:
 - all 16 cell voltages plus minimum, maximum, average and delta;
 - environment, pack, MOS and four cell temperatures;
 - operating state: charging, discharging or idle;
-- raw BMS alarm/status words for future decoding;
+- decoded BMS protections and warnings, the cells being balanced and a "Balancer active" indicator, plus the raw status words;
+- the BMS basic parameters (protection and alarm limits, balancer settings, charge voltage and current), read with service `80`;
+- guarded writing of the two balancer settings only (service `81`, see [Service 81](#service-81-write-one-basic-parameter));
 - design capacity and lifetime charge/discharge counters;
 - BMS hardware, firmware and model, plus serial-number fields, production date and manufacturer code;
 - valid/invalid frame counters and BMS communication state;
 - automatic BMS-address discovery and recovery after a communication timeout;
 - three automatic status LEDs.
 
-The [generic ESPHome YAML](docan-wifi-stick-esphome.yaml) contains the complete implementation. It does not require a custom ESPHome component.
+The recommended setup is the shared ESPHome package [`common/docan-bms.yaml`](common/docan-bms.yaml) with one small device file per pack; see [Recommended setup: shared package](#recommended-setup-shared-package). The older single-file [generic ESPHome YAML](docan-wifi-stick-esphome.yaml) is kept for reference; it is read-only and does not yet contain the status-bit decoding or services `80`/`81`. Neither requires a custom ESPHome component.
 
 This is an independent reverse-engineering result, not official Docan documentation. Confirm the PCB revision and pinout before using it on another stick.
 
@@ -287,8 +289,10 @@ The checksum is appended as four uppercase hexadecimal characters.
 | `51` | BMS hardware, firmware and model | `510000` | Once after every discovery, retried every 30 s until parsed |
 | `B0` | Data group 03: serial numbers, production date, manufacturer | `B0600A000103FF00` | Once after every discovery, retried every 30 s until parsed |
 | `B0` | Data group 04: lifetime counters | `B0600A000104FF00` | Every 60 s |
+| `80` | Read basic parameters (212-byte block) | `80E002@@` (INFO = address) | After discovery, every hour and on a button (package only) |
+| `81` | Write one basic parameter | `818008@@<index><value>` | Only on request, guarded (package only) |
 
-Requests other than discovery are prefixed with `~22<address>4A` and followed by the checksum. The `B0` INFO field has this layout:
+Requests other than discovery are prefixed with `~22<address>4A` and followed by the checksum. In the package, `@@` in a command tail is replaced by the discovered BMS address, because services `80` and `81` carry the address in INFO as well. The `B0` INFO field has this layout:
 
 ```text
 00 | operation (01 = read) | data group | FF | 00
@@ -425,26 +429,132 @@ The final part of the live payload contains status fields. Let `r = q + 13`, imm
 | `r + 6` | Alarm status | 2 | Raw bits |
 | `r + 8` | FET status | 2 | Raw bits, differs per firmware |
 | `r + 10` | Four "low" status words | 8 | Unknown, skipped |
-| `r + 18` | Balance status low | 2 | Probably a per-cell bitmask, cells 1–16 |
-| `r + 20` | Balance status high | 2 | Probably a per-cell bitmask |
+| `r + 18` | Balance status low | 2 | Per-cell bitmask, bit n = cell n+1 (cells 1–16) |
+| `r + 20` | Balance status high | 2 | Per-cell bitmask, cells 17–32 |
 | `r + 22` | Four "high" status words | 8 | Unknown, skipped |
 | `r + 30` | Machine status | 1 | Raw |
 | `r + 31` | I/O status | 2 | Raw |
 
-Voltage, current, temperature, alarm, FET, balance-low, balance-high, machine and I/O status are exposed as raw diagnostic entities. Their vendor-specific individual bits have not yet been confidently decoded. Whether the balance status words really show, per cell, which cell is being balanced has not been checked yet; if so, they would show directly what the balancer is doing.
+The bit meanings below come from the vendor's DR BMS Monitor tool (V1.0.2.9) and were checked in the field on four packs (`STD05`/`LN10` and `ANZ09`). The package publishes them as the text sensors "BMS protections", "BMS warnings" and "Balancing cells" and the binary sensor "Balancer active". Unknown bits are shown as hex instead of being hidden. All raw words also remain available as diagnostic entities.
 
-Ten-second logs over one week show this behaviour of the voltage status word. These meanings are observations, not vendor-confirmed definitions:
+**Voltage status**
 
-| Bit | Set | Cleared | Likely meaning |
-|---|---|---|---|
-| `0x10` | Highest cell about 3.55–3.58 V (both generations) | Below about 3.45 V | Cell over-voltage warning |
-| `0x01` | At the top of charge (seen on `ANZ09` only) | Below about 3.40 V | Charging blocked / pack full |
+| Bit | Meaning | Type |
+|---|---|---|
+| `0x0001` | Cell overvoltage | Protection (also the normal charge stop at the top) |
+| `0x0002` | Cell undervoltage | Protection |
+| `0x0004` | Pack overvoltage | Protection |
+| `0x0008` | Pack undervoltage | Protection |
+| `0x0010` | Cell high voltage | Warning |
+| `0x0020` | Cell low voltage | Warning |
+| `0x0040` | Pack high voltage | Warning |
+| `0x0080` | Pack low voltage | Warning |
+| `0x0100` | Cell difference | Warning |
+| `0x0200` | Overvoltage lock (repeated overvoltage) | Protection |
+| `0x0400` | Undervoltage lock | Protection |
+| `0x0800` | Temperature difference | Warning |
+| `0x4000` | Cell difference | Protection |
 
-A value of `0x11` means both bits are set. While `0x01` is set, the pack reports exactly 0.00 A and neither charges nor discharges, even with a small load on the bus.
+This matches the earlier week-long observation: `0x0010` sets with the highest cell at about 3.55–3.58 V (the cell overvoltage alarm is 3580 mV, restore 3450 mV) and `0x0001` at the top of charge. While `0x0001` is set, the pack reports exactly 0.00 A and neither charges nor discharges, even with a small load on the bus. A value of `0x11` means both bits are set.
+
+**Current status**
+
+| Bit | Meaning |
+|---|---|
+| `0x0001` | Charging (a state, not a fault; confirmed) |
+| `0x0002` | Discharging (a state, not a fault; confirmed) |
+| `0x0004` | Charge overcurrent protection |
+| `0x0008` | Short circuit |
+| `0x0010` / `0x0020` | Discharge overcurrent 1 / 2 protection |
+| `0x0040` / `0x0080` | Charge / discharge overcurrent warning |
+| `0x0100` | Overcurrent lock |
+| `0x0200` | Reverse connection |
+
+**Temperature status:** bits 0–7 are protections, bits 8–15 warnings, each in the order charge high, charge low, discharge high, discharge low, ambient high, ambient low, MOS high, MOS low.
+
+**Alarm status:** `0x0080` SOC low warning, `0x0100` SOC low protection; other bits are still unknown.
+
+**Balance status:** the low word has bit n set for cell n+1, the high word covers cells 17–32. On `ANZ09` the active balancer works on one cell at a time, always the lowest cell.
+
+**I/O status:** bit `0x0200` is set while the balancer is active (`0x4000` idle, `0x4200` balancing). It appears together with the balance bits and the rise of the environment temperature described below.
+
+**FET status:** normal operation is `0x1023` on `STD05` and `ANZ09`, `0x23` on `LN10`. Compare FET status only between packs running the same BMS firmware.
 
 ### Environment temperature as a balancing indicator
 
-On `ANZ09` packs, the environment temperature rises from about 29 °C to 34–36 °C whenever the cell delta exceeds about 20–30 mV, and falls back when the delta is small again. The correlation with the cell delta was 0.71 and 0.77 on two packs. This happens both on the voltage plateau and at the top of charge, which suggests that the active balancer starts on cell delta regardless of cell voltage. Until the balance status words are decoded, this temperature is a useful indirect "balancer running" signal.
+On `ANZ09` packs, the environment temperature rises from about 29 °C to 34–36 °C whenever the cell delta exceeds about 20–30 mV, and falls back when the delta is small again. The correlation with the cell delta was 0.71 and 0.77 on two packs. This happens both on the voltage plateau and at the top of charge, which suggests that the active balancer starts on cell delta regardless of cell voltage. The I/O status bit `0x0200` and the balance status words now show this directly; the temperature rise remains a useful cross-check.
+
+## Service 80: read basic parameters
+
+Request INFO is the BMS address, `LENID` `002`:
+
+```text
+~22<ADR>4A80E002<ADR><CHKSUM>\r
+```
+
+The response INFO is a 212-byte block of 106 big-endian 16-bit values. All 106 words decoded to plausible values on both `ANZ09` and `STD05`. Byte offsets are from the start of INFO:
+
+| Byte | Value | Unit |
+|---:|---|---|
+| 0 / 2 / 4 | Cell overvoltage protection: value / delay / restore | mV / ms / mV |
+| 6 / 8 / 10 | Cell undervoltage protection: value / delay / restore | mV / ms / mV |
+| 12 / 14 / 16 | Cell difference protection: value / delay / restore | mV / ms / mV |
+| 18 / 20 / 22 | Pack overvoltage protection: value / delay / restore | 0.01 V / ms / 0.01 V |
+| 24 / 26 / 28 | Pack undervoltage protection: value / delay / restore | 0.01 V / ms / 0.01 V |
+| 30 / 32 | Charge overcurrent 1 protection / delay | 0.1 A / ms |
+| 36 / 38 | Charge overcurrent 2 protection / delay | 0.1 A / ms |
+| 42 / 44 | Discharge overcurrent 1 protection / delay | 0.1 A / ms |
+| 48 / 50 | Discharge overcurrent 2 protection / delay | 0.1 A / ms |
+| 54–94 | Temperature protections (charge, discharge, MOS, ambient) | 0.1 °C, signed |
+| 96 / 98 / 100 | Cell overvoltage alarm: value / delay / restore | mV |
+| 102 / 104 / 106 | Cell undervoltage alarm: value / delay / restore | mV |
+| 108 / 110 / 112 | Cell difference alarm: value / delay / restore | mV |
+| 114–124 | Pack over- and undervoltage alarms | 0.01 V |
+| 126–148 | Charge and discharge overcurrent alarms | 0.1 A |
+| 150–190 | Temperature alarms | 0.1 °C, signed |
+| 192 / 194 | Cell sleep voltage / sleep delay | mV / min |
+| 200 | Balancer start voltage ("Starting V" in the vendor tool) | mV |
+| 202 | Balancer start difference ("Starting V diff") | mV |
+| 204 / 206 | SOC low alarm / restore | % |
+| 208 | Charge voltage | 0.01 V |
+| 210 | Charge current limit | 0.1 A |
+
+The response is about 460 characters, roughly 0.5 s at 9600 baud. The package therefore waits 1.5 s after this request before sending the next one, and raises the UART debug buffer to 1100 bytes. The parser accepts the block only if several known values are plausible, and tolerates up to two leading bytes.
+
+### Factory settings observed
+
+The two BMS generations ship with different balancer and overvoltage settings, which is useful when comparing packs or asking the vendor for support:
+
+| | `16S200JC26`, `STD05` / `LN10` (2025) | `16S200JC35`, `ANZ09` (2026) |
+|---|---:|---:|
+| Balancer start voltage | 3450 mV | 2800 mV |
+| Balancer start difference | 30 mV | 10 mV |
+| Cell overvoltage protection | 3680 mV | 3650 mV |
+| Design capacity (`B0` group 04) | 314 Ah | 328 / 329 Ah |
+
+All other limits were identical: cell overvoltage alarm 3580 mV (restore 3450 mV), cell undervoltage alarm 2700 mV, cell undervoltage protection 2500 mV, cell difference alarm 500 mV and protection 800 mV, pack overvoltage protection 58.40 V, charge voltage 56.00 V, charge current limit 150 A, overcurrent protection 220 A and SOC low alarm 15 %. On `ANZ09` the balancer visibly stops at its 10 mV threshold.
+
+## Service 81: write one basic parameter
+
+> **Caution.** These are the BMS's own protection settings. Writes have so far been tested in a host simulation only, not on a real BMS.
+
+Request INFO is the address, a one-byte parameter index and the value as a big-endian int16; `LENID` is `008` (length field `8008`). Example, balancer start voltage 3000 mV (`0x0BB8`) on address `03`:
+
+```text
+~22034A81800803660BB8FBD0\r
+```
+
+Index list from the vendor tool: cell overvoltage protection 0/1/2, cell undervoltage protection 3/4/5, cell difference protection 6/7/8, …, cell overvoltage alarm 48/49/50, cell undervoltage alarm 51/52/53, cell sleep 98, sleep delay 99, balancer start voltage 102 (`0x66`), balancer start difference 103 (`0x67`), SOC low alarm 104/105, charge voltage 106, charge current 107.
+
+The package writes **only** indexes `0x66` and `0x67`, with these safeguards:
+
+- the switch "Allow BMS parameter write" must be on; it is always off after boot and switches itself off after 5 minutes or after a write;
+- a valid service `80` read must exist;
+- values must be within 2700–3600 mV (start voltage) and 10–100 mV (start difference);
+- only changed values are written;
+- the block is read back afterwards and the result is reported in "Parameter write result" (`Verified`, `MISMATCH`, or rejected with the RTN code).
+
+Do not add other indexes without a good reason. The vendor tool also contains firmware-upgrade, calibration and log-clearing commands (services `45`, `82` and `83`); these must not be used from the stick.
 
 ## Decoded lifetime-counter payload
 
@@ -530,13 +640,49 @@ docan_ap_password: "your-fallback-ap-password"
 
 Change `esphome.name` and `friendly_name` for each stick. Do not give two sticks the same ESPHome name.
 
+### Recommended setup: shared package
+
+All logic lives in [`common/docan-bms.yaml`](common/docan-bms.yaml). Do not flash it directly. Each pack gets a small device file such as [`examples/docan-pack-1.yaml`](examples/docan-pack-1.yaml) that sets the substitution `pack` (1, 2, 3, 4), includes the package and names its own API key:
+
+```yaml
+substitutions:
+  pack: "1"
+
+packages:
+  docan: !include common/docan-bms.yaml
+
+api:
+  encryption:
+    key: !secret docan_pack_1_encryption_key
+```
+
+The ESPHome name, friendly name and fallback hotspot are derived from `pack` (`docan-pack-<pack>`). The secret names are listed in [`examples/secrets.example.yaml`](examples/secrets.example.yaml). If your ESPHome version looks for `secrets.yaml` next to the included file, place [`examples/common-secrets.yaml`](examples/common-secrets.yaml) as `common/secrets.yaml`; it only includes `../secrets.yaml`.
+
+ESPHome notes learned while building the package:
+
+- `!secret` is resolved before substitutions, so a secret name cannot contain `${pack}`. The API key therefore stays in the device file.
+- ESPHome derives the OTA key from the API key, and a running stick only accepts uploads signed with its current key. Switching all packs to one shared API key over the air fails with "Device rejected the handshake". Keep per-pack keys, or change keys only with a serial flash.
+- The Home Assistant file editor flags the `!lambda` tag. The package avoids it by using a fixed 700 ms delay between requests plus an extra 800 ms after services `80` and `81`.
+- `minimum_chip_revision: "3.1"` and `sram1_as_iram: true` are set; all DR-WIFI-04-V2 sticks seen so far have an ESP32 rev 3.1.
+- On boot, "Invalid frames" is published as 0 and "Parameter write result" as "No write since boot" instead of Unknown.
+
+### Support snapshot template
+
+[`tools/docan-snapshot-template.jinja`](tools/docan-snapshot-template.jinja) prints identity, live values, BMS settings, status and all cell voltages of up to four packs as plain text. Paste it into Home Assistant under *Developer tools > Template* and copy the output into a support request. It contains serial numbers, so redact them before sharing publicly. Useful moments for a snapshot are when the highest cell of a pack passes 3.45 V and during balancing after reaching 100 %.
+
 ### Running several packs
 
 Four packs have been run with identical YAML on four sticks. Per pack, only `esphome.name`, `friendly_name`, `wifi.use_address` (when a fixed address is used), the fallback AP SSID and the two device-specific secrets differ.
 
 - Do not connect the USB ports of several packs to one ESP32 without per-channel galvanic isolation. The USB ground is most likely the pack's B−, and a pack with an open MOSFET can sit at a different potential.
 - The RS485 link between packs is a cleaner option for a single ESP32: a passive listener built with a 3.3 V auto-direction RS485 module whose TXD is tied high so that it never transmits. This has not been built yet.
+- With two packs per string, connect the inverter + to the first pack and the inverter − to the second (cross connection); the link cables then each carry one pack's current. At about 190 A total, the four packs shared the current within 10 % of the average.
 - Home Assistant `button-card` templates written with YAML `>-` folding must not contain `//` comments inside the JavaScript. Folding joins the lines, so the comment swallows the statement that follows it.
+
+### Practical notes for Home Assistant automations
+
+- An automation that stops a grid-charging session on BMS protections should not react to voltage bit `0x0001` (the normal charge stop at the top) or to current bits `0x0001`/`0x0002` (charging/discharging states). Masks used: current `0x033C`, voltage `0x460E`, temperature any bit.
+- Cell difference in the middle of the voltage curve says little; in one snapshot an older pack showed the largest mid-curve delta. Judge balance at the top of charge, with the highest cell above 3.45 V.
 
 ## What is confirmed and what remains open
 
@@ -554,6 +700,9 @@ Four packs have been run with identical YAML on four sticks. Per pack, only `esp
 - BMS hardware, firmware and model (service `51`);
 - serial-number fields, production date and manufacturer code (`B0` data group 03);
 - the `B0` read request layout for data groups 03 and 04;
+- the meaning of the voltage, current, temperature, balance and I/O status bits and the SOC-low alarm bits;
+- the balance status words as a per-cell bitmask, and I/O bit `0x0200` as "balancer active";
+- the complete service `80` basic-parameter block on `ANZ09` and `STD05`;
 - automatic status-LED operation in ESPHome;
 - TCK through R25 to GPIO13 and TDO through R26 to GPIO15.
 
@@ -562,15 +711,15 @@ Four packs have been run with identical YAML on four sticks. Per pack, only `esp
 - exact purpose and common-node destination of D1;
 - exact purpose of D4/D38 and the surrounding GPIO2 circuit;
 - direct continuity confirmation of the TDI and TMS pads;
-- meanings of the individual raw status bits; only voltage-status bits `0x10` and `0x01` have observed behaviour so far;
+- the remaining alarm-status bits, the four "low" and four "high" status words, and the machine status;
+- service `81` writes on a real BMS (tested in simulation only);
 - the last 7 bytes of the service `51` response and the meaning of the three serial-number fields;
-- other `B0` data groups (thresholds and balancer settings are probably there) and the `B0` write operation (probably `02`, untested);
+- other `B0` data groups (thresholds and balancer settings turned out to be in service `80`) and the `B0` write operation (probably `02`, untested);
 - services such as `44` (alarm information), `47` (system parameters) and `92` (charge/discharge management), known from Pylontech-like protocols; these meanings are hypotheses and untested on this BMS;
-- whether the balance status words are a per-cell bitmask of the cells being balanced;
 - the USB-A pin assignment and signal level of the BMS serial link;
 - whether other Docan PCB revisions have the same pinout and protocol layout.
 
-The ESPHome configuration in this repository sends no BMS setting-changing or control commands; it is read-only. The original firmware's own update mechanism was reconstructed separately by static analysis and is documented, unverified, under [Original firmware update mechanism](#original-firmware-update-mechanism-static-analysis-reconstruction-not-yet-verified).
+The single-file ESPHome configuration is read-only. The shared package sends one kind of setting-changing command, the guarded service `81` write of the two balancer settings described above, and only when the write switch is turned on; it sends no control commands. The original firmware's own update mechanism was reconstructed separately by static analysis and is documented, unverified, under [Original firmware update mechanism](#original-firmware-update-mechanism-static-analysis-reconstruction-not-yet-verified).
 
 ## Safety and reproducibility notes
 
@@ -654,20 +803,20 @@ Contributions that would help complete this reverse engineering include:
 
 - clear photographs of other board revisions;
 - continuity measurements for D1, D4, D38, TDI and TMS;
-- raw frames captured while specific alarms or balancing states are deliberately active;
+- raw frames captured while specific alarms are deliberately active, to decode the remaining alarm-status bits;
 - a read-only scan of `B0` data groups `00`–`0F` (operation `01`) and of services `44` (alarm information in Pylontech-like protocols) and `47` (system parameters), with the raw replies logged. Look for likely cell thresholds such as `0D48` (3400 mV), `0DDE` (3550 mV) and `0E42` (3650 mV). Do not try write operations;
-- checking whether the balance status words are a per-cell bitmask, for example by showing them per cell on a dashboard while one or two cells are visibly being balanced at the top of charge;
+- a first verified service `81` write on a real BMS, with the read-back result;
 - a passive RS485 listener that monitors several packs from one ESP32;
 - manufacturer documentation for the DR-1363 data groups;
 - confirmation of the YAML on Noon, YP, LN, Panda or other Docan pack families;
-- a safe decoding table for the raw voltage/current/temperature/alarm/FET/I/O status bits.
+- decoding of the FET status bits and the remaining status words.
 
 Additional leads from an independent analysis of the original `wifi_32` firmware (not yet verified against captured responses from this pack):
 
 - The length checksum (`LCHKSUM`) suggested by the firmware analysis has since been confirmed on captured frames; see [BMS serial protocol](#bms-serial-protocol). Adding it to the ESPHome parser would be a small extra validation step.
 - Capture a response to read-only command `0x84` and compare it with the working `0x42` live-telemetry response and simultaneous app values. The original firmware reportedly polls `0x84`, with a different, apparently fixed response layout. Do not assume the two responses are interchangeable.
-- The ESPHome parser now matches each response to the pending request and only decodes `0x42`, `0x51` and `B0` group 03/04 responses; anything else is logged as raw hex. When adding another command, give it its own branch in the parser rather than relying on the live-telemetry decoder.
-- Investigate read-only commands `0x80`, `0x83` and `0x4D` separately, and compare their responses with the still-unknown status fields and BMS clock. Treat firmware-derived field names and scales as hypotheses until checked against captured frames.
+- The ESPHome parser matches each response to the pending request and only decodes `0x42`, `0x51`, `0x80`, `0x81` and `B0` group 03/04 responses; anything else is logged as raw hex. When adding another command, give it its own branch in the parser rather than relying on the live-telemetry decoder.
+- Service `0x80` is now decoded (see above). Do not send `0x83` blindly: in the vendor tool, services `45`, `82` and `83` are firmware-upgrade, calibration and log-clearing commands. Investigate read-only command `0x4D` separately and compare its response with the still-unknown status fields and BMS clock. Treat firmware-derived field names and scales as hypotheses until checked against captured frames.
 - Compare the original firmware's reported `0x50`, `0x51`, `0xA0`, `0xB0` and `0xB1` poll cycle with actual UART captures; record BMS model, firmware version and address for each capture.
 - Verify the reconstructed update mechanism documented under [Original firmware update mechanism](#original-firmware-update-mechanism-static-analysis-reconstruction-not-yet-verified). The most useful contributions are a passive UART capture of a real BMS update (to confirm the frame format and especially the CRC byte order), and details of the BMS-side bootloader's integrity checks and recovery behaviour, which are not in the stick firmware.
 - Investigate the factory-looking Wi-Fi configuration found in one original firmware dump's NVS partition (SSID `DR_New_Energy`, with a preconfigured password). Determine whether the stick joins that network as a client or creates its own access point, and whether the entry is only a leftover production/test setting. This single dump does not prove every unit ships with the same credentials, establish the Wi-Fi mode, or show that a user's network was never configured. If a working credential is shared across production devices, the manufacturer should address it.

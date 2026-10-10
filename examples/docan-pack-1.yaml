@@ -1,0 +1,17 @@
+# Example device file for one DoCan pack. All logic lives in
+# common/docan-bms.yaml; only the pack number and the API key differ.
+substitutions:
+  pack: "1"
+
+packages:
+  docan: !include common/docan-bms.yaml
+
+# Per-pack key. !secret is resolved before substitutions, so the secret name
+# cannot be built from ${pack}.
+api:
+  encryption:
+    key: !secret docan_pack_1_encryption_key
+
+# Optional: only needed when mDNS is unreliable on your network.
+# wifi:
+#   use_address: 192.168.1.50
