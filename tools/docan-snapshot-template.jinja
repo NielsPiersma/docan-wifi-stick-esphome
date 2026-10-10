@@ -1,0 +1,32 @@
+{%- set keys = [
+  'bms_model','bms_firmware','bms_hardware','serial_number','production_date',
+  'cycle_count','state_of_charge','pack_voltage','pack_current','operating_state',
+  'cell_voltage_delta','highest_cell_voltage','highest_cell_number',
+  'lowest_cell_voltage','lowest_cell_number',
+  'environment_temperature','pack_average_temperature','mos_temperature',
+  'design_capacity','full_charge_capacity',
+  'lifetime_charged_energy','lifetime_discharged_energy',
+  'bms_balancer_start_voltage','bms_balancer_start_difference',
+  'bms_cell_overvoltage_alarm','bms_cell_overvoltage_alarm_restore',
+  'bms_cell_overvoltage_protection','bms_cell_overvoltage_protection_restore',
+  'bms_cell_undervoltage_alarm','bms_cell_undervoltage_protection',
+  'bms_cell_difference_alarm','bms_cell_difference_protection',
+  'bms_charge_voltage','bms_charge_current_limit',
+  'bms_charge_overcurrent_protection','bms_discharge_overcurrent_protection',
+  'bms_protections','bms_warnings','balancer_active','balancing_cells',
+  'raw_fet_status','raw_io_status'] -%}
+DoCan BMS snapshot {{ now().strftime('%Y-%m-%d %H:%M:%S') }}
+{%- for n in range(1, 5) %}
+
+=== Pack {{ n }} ===
+{%- for k in keys %}
+{%- set e = states | selectattr('entity_id', 'search', 'docan_pack_' ~ n ~ '_' ~ k ~ '$') | first %}
+{{ k }}: {{ (((e.state | float) | round(3) if is_number(e.state) else e.state) ~ ' ' ~ (e.attributes.unit_of_measurement | default(''))) | trim if e else 'n/a' }}
+{%- endfor %}
+{%- set ns = namespace(cells=[]) %}
+{%- for c in range(1, 17) %}
+{%- set e = states | selectattr('entity_id', 'search', 'docan_pack_' ~ n ~ '_cell_' ~ '%02d' % c ~ '_voltage$') | first %}
+{%- set ns.cells = ns.cells + [('%.3f' % (e.state | float)) if e and is_number(e.state) else '?'] %}
+{%- endfor %}
+cells 01-16 (V): {{ ns.cells | join(' ') }}
+{%- endfor %}
