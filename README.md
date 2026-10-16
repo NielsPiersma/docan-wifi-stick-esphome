@@ -766,6 +766,76 @@ ESPHome notes learned while building the package:
 - `minimum_chip_revision: "3.1"` and `sram1_as_iram: true` are set; all DR-WIFI-04-V2 sticks seen so far have an ESP32 rev 3.1.
 - On boot, "Invalid frames" is published as 0 and "Parameter write result" as "No write since boot" instead of Unknown.
 
+### Entities per pack
+
+Each stick running the package creates the entities below. The example values were read from pack 2 (`16S200JC26`, firmware `LN10`) during a light discharge, with serial numbers redacted.
+
+**Sensors**
+
+| Entity | Example |
+|---|---|
+| State of charge / State of health | 89.64 % / 100 % |
+| Pack voltage / current / power | 53.22 V / −2.45 A / −130 W |
+| Operating state | Discharging |
+| Remaining / full-charge / design capacity | 300.82 / 335.57 / 314.00 Ah |
+| Cycle count | 9 |
+| Lowest / highest / average cell voltage | 3.325 / 3.332 / 3.327 V |
+| Lowest / highest cell number | 16 / 12 |
+| Cell voltage delta | 7 mV |
+| Environment / pack average / MOS temperature | 25.1 / 21.3 / 22.6 °C |
+| Lifetime charged / discharged capacity | 258.50 / 229.90 Ah |
+| Lifetime charged / discharged energy | 13.95 / 12.12 kWh |
+| BMS protections / BMS warnings | OK / OK |
+| Balancer active / Balancing cells / Balancing cell count | Off / none / 0 |
+
+**Configuration** (used only for the guarded balancer write; see [Service 81](#service-81-write-one-basic-parameter))
+
+| Entity | Purpose |
+|---|---|
+| Allow BMS parameter write | Interlock; off after boot, switches itself off after 5 minutes or after a write |
+| Balancer start voltage setting / Balancer start difference setting | Values for the next write; follow the BMS while the interlock is off |
+| Write balancer settings | Writes only changed values and reads them back |
+
+**Diagnostic**
+
+| Entity | Example |
+|---|---|
+| BMS communication | Connected |
+| BMS model / firmware / hardware | 16S200JC26 / LN10 / T1 |
+| Serial number (fields 1–3) / Production date / Manufacturer code | *(redacted)* / 2025-03-22 / DR |
+| Detected BMS address / Detected pack number | 1 / 2 |
+| Valid / invalid frames | 1331 / 0 |
+| Cell 01 … Cell 16 voltage | 3.325–3.332 V |
+| Cell temperature 1–4 | 21.7 / 21.7 / 21.0 / 20.9 °C |
+| Cell count | 16 |
+| BMS balancer start voltage / difference | 3450 / 30 mV |
+| BMS cell overvoltage protection / restore | 3680 / 3400 mV |
+| BMS cell overvoltage alarm / restore | 3580 / 3450 mV |
+| BMS cell undervoltage alarm / protection | 2700 / 2500 mV |
+| BMS cell difference alarm / protection | 500 / 800 mV |
+| BMS cell sleep voltage | 3300 mV |
+| BMS pack overvoltage protection | 58.40 V |
+| BMS charge voltage / charge current limit | 56.00 V / 150.0 A |
+| BMS charge / discharge overcurrent protection | 220.0 / 220.0 A |
+| BMS SOC low alarm | 15 % |
+| Parameter write result | No write since boot |
+| BMS history status / records read | Done, 568 records / 568 |
+| BMS history record | the last raw record, see below |
+| Raw voltage / current / temperature / alarm status | 0 / 2 (discharging) / 0 / 0 |
+| Raw FET / IO / machine status | 0x23 / 0x4000 (balancer idle) / 0 |
+| Raw balance status low / high | 0 / 0 |
+| Pack internal resistance | 0.0 mΩ (this firmware does not report it) |
+
+Buttons: *Refresh live telemetry*, *Refresh lifetime counters*, *Refresh battery info*, *BMS discovery*, *Read BMS parameters*, *Read BMS history*, *Stop BMS history read* and *Reset frame counters*.
+
+The history record above was the last of 568 records on this `LN10` pack:
+
+```text
+568;01;01001A0A0E1718070212FFD600080008000000000000000003E8024100014F00FD00E60000000000000000100CF30CF40CF40CF40CF40CF30CF30CF40CF30CF00CF40CF00CF50CF40CF50CF30400E300E200DA00D8000F
+```
+
+The converter decodes it as 2026-10-14 23:24:07 (BMS clock), event *Enter DISCH*, 53.00 V, −4.20 A, 8 charges and 8 discharges, SOC 57.70 %, SOH 100.00 %, 335 Ah, environment 25.3 °C, MOS 23.0 °C, 16 cells from 3.312 to 3.317 V and four temperatures from 21.6 to 22.7 °C. The full-charge capacity matches the live value of 335.57 Ah.
+
 ### Support snapshot template
 
 [`tools/docan-snapshot-template.jinja`](tools/docan-snapshot-template.jinja) prints identity, live values, BMS settings, status and all cell voltages of up to four packs as plain text. Paste it into Home Assistant under *Developer tools > Template* and copy the output into a support request. It contains serial numbers, so redact them before sharing publicly. Useful moments for a snapshot are when the highest cell of a pack passes 3.45 V and during balancing after reaching 100 %.
