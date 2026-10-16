@@ -1,6 +1,6 @@
 # Reverse-engineering the Docan DR-WIFI-04-V2 battery Wi-Fi stick for ESPHome
 
-**Status:** working prototype, documented 27 September 2026, status words and BMS parameters added 10 October 2026  
+**Status:** working prototype, documented 27 September 2026, status words and BMS parameters added 10 October 2026, BMS history log added 16 October 2026  
 **Board tested:** `DR-WIFI-04-V2`, PCB date `2024-05-06`  
 **Module:** Espressif ESP32-WROOM-32E  
 **Battery tested:** Docan/DoCan ZZ 16-cell LiFePO4 packs (BMS firmware `STD05`, `LN10` and `ANZ09`) using the ASCII BMS protocol described below
@@ -48,6 +48,7 @@ The configuration currently provides:
 - the BMS basic parameters (protection and alarm limits, balancer settings, charge voltage and current), read with service `80`;
 - guarded writing of the two balancer settings only (service `81`, see [Service 81](#service-81-write-one-basic-parameter));
 - design capacity and lifetime charge/discharge counters;
+- on request, the BMS history log (service `4B`, read-only), with Home Assistant examples that store it as the same CSV as the vendor tool's export; see [BMS history log](#bms-history-log-service-4b);
 - BMS hardware, firmware and model, plus serial-number fields, production date and manufacturer code;
 - valid/invalid frame counters and BMS communication state;
 - automatic BMS-address discovery and recovery after a communication timeout;
@@ -291,8 +292,9 @@ The checksum is appended as four uppercase hexadecimal characters.
 | `B0` | Data group 04: lifetime counters | `B0600A000104FF00` | Every 60 s |
 | `80` | Read basic parameters (212-byte block) | `80E002@@` (INFO = address) | After discovery, every hour and on a button (package only) |
 | `81` | Write one basic parameter | `818008@@<index><value>` | Only on request, guarded (package only) |
+| `4B` | Read one history-log record | `4BC004<TYPE>@@` | Only on request, one record at a time (package only) |
 
-Requests other than discovery are prefixed with `~22<address>4A` and followed by the checksum. In the package, `@@` in a command tail is replaced by the discovered BMS address, because services `80` and `81` carry the address in INFO as well. The `B0` INFO field has this layout:
+Requests other than discovery are prefixed with `~22<address>4A` and followed by the checksum. In the package, `@@` in a command tail is replaced by the discovered BMS address, because services `80`, `81` and `4B` carry the address in INFO as well. The `B0` INFO field has this layout:
 
 ```text
 00 | operation (01 = read) | data group | FF | 00
@@ -556,6 +558,91 @@ The package writes **only** indexes `0x66` and `0x67`, with these safeguards:
 
 Do not add other indexes without a good reason. The vendor tool also contains firmware-upgrade, calibration and log-clearing commands (services `45`, `82` and `83`); these must not be used from the stick.
 
+## BMS history log (service 4B)
+
+The BMS keeps a history log of events with a full snapshot per record. The package reads it with service `4B`, the same data as *DR BMS Monitor V1.0.2.9 > History > Standard Data > Read data*. The decoding was taken from the vendor tool and checked against live values on all three firmware versions (`STD05`, `LN10` and `ANZ09`): voltage, current, cycle counts, SOH, SOC, full capacity, temperatures and cell voltages.
+
+> **Never send `45`, `47`/`49` from the stick.** On the same screen the vendor tool uses `45` to **delete** the history log, and `47`/`49` to read and **change** the logging interval. The package only sends `4B`, which is read-only.
+
+### Request and answer
+
+Request INFO is `TYPE` followed by the BMS address, `LENID` `004`:
+
+```text
+~22<ADR>4A4BC004<TYPE><ADR><CHKSUM>\r
+```
+
+| `TYPE` | Meaning |
+|---|---|
+| `00` | First record (the newest) |
+| `01` | Next record |
+| `02` | Repeat the last record (the vendor tool uses this after a checksum error) |
+
+Answer INFO, offsets from the start of INFO, big-endian:
+
+| Offset | Field | Scale |
+|---:|---|---|
+| 0 | `00` = more records follow, `01` = last record | |
+| 1 | Unknown (`0xB4` on `ANZ09`, `0x00` on `STD05`/`LN10`) | |
+| 2–7 | Date and time of the BMS clock: YY MM DD hh mm ss | year + 2000 |
+| 8 | Total voltage | 0.1 V |
+| 10 | Total current, signed | 0.1 A |
+| 12 | Number of charges | |
+| 14 | Number of discharges | |
+| 16 | Time zone of the BMS clock | value − 12 = UTC offset |
+| 18 | Depth of discharge | |
+| 20–23 | Run counter (the vendor tool shifts byte 22 by 16 instead of 8) | |
+| 24 | SOH | 0.1 % |
+| 26 | SOC | 0.1 % |
+| 28 | Unknown | |
+| 29 | Full-charge capacity | Ah |
+| 31 | Environment temperature, signed | 0.1 °C |
+| 33 | MOS temperature, signed | 0.1 °C |
+| 35–38 | Alarm bits (u32) | |
+| 39–42 | Protection bits (u32) | |
+| 43 | Cell count N | |
+| 44 | N cell voltages | mV |
+| 44 + 2N | Temperature count M | |
+| 45 + 2N | M temperatures, signed | 0.1 °C |
+| 45 + 2N + 2M | Event code (u16) | see `EVENTS` in [`tools/docan_history_to_csv.py`](tools/docan_history_to_csv.py) |
+
+The time-zone field was `0x14` (UTC+8) on `ANZ09`. On `STD05` and `LN10` it was `0x00`, although their clock also runs on UTC+8.
+
+The names of the event codes and of the alarm and protection bits come from the vendor tool and are listed in the converter.
+
+### Log depth per firmware
+
+| Firmware | Records in the log | Period covered | Notes |
+|---|---:|---|---|
+| `STD05` | 568 | about 3 days | Charge and discharge events, a "Time recording" entry about once a day |
+| `LN10` | 568 | about 2 days | Same as `STD05` |
+| `ANZ09` | 500 | about 3 hours | Logs "Enter CHG"/"Exit CHG" about every 2 seconds while the pack floats near full charge |
+
+- Records come newest first. The log is a ring buffer, so the oldest records are overwritten.
+- On `ANZ09` a protection event is overwritten within a few hours. The Home Assistant example therefore starts a read automatically when a pack reports a voltage protection, and again after it is released.
+- During a slow read, new records can be written; the last records of such a read are then newer than record 1. Sort on the time column when analysing.
+
+### Using it
+
+The package adds the buttons "Read BMS history" and "Stop BMS history read", and the sensors "BMS history status", "BMS history records read" and "BMS history record". Every record is published raw as `<n>;<ADR>;<INFO hex>`. That text stays below Home Assistant's 255-character state limit for 16 cells and up to 8 temperatures. A watchdog repeats a request when no valid answer arrives within 6 s and stops after repeated failures.
+
+The examples turn this into files:
+
+| File | Purpose |
+|---|---|
+| [`examples/home-assistant/docan_history.yaml`](examples/home-assistant/docan_history.yaml) | Home Assistant package: writes every record to a file, converts the files to CSV when a read is done, and starts a read automatically on a voltage protection (voltage status mask `0x460F`) and after its release |
+| [`examples/home-assistant/docan_history_card.yaml`](examples/home-assistant/docan_history_card.yaml) | Dashboard card with the read button, status, record count and stop button per pack |
+| [`tools/docan_history_append.py`](tools/docan_history_append.py) | Appends one record to `/config/docan/history/docan_history_pack_<pack>_<YYYY-MM-DD_HHMMSS>.txt`; record 1 starts a new file, so every read gets its own file |
+| [`tools/docan_history_to_csv.py`](tools/docan_history_to_csv.py) | Converts raw records to the vendor tool's CSV layout: same columns and number formats, GB2312 and CRLF |
+
+Installation notes:
+
+- Copy both Python scripts to `/config/docan/` and the package to `/config/packages/`, and adjust the entity prefixes to your installation.
+- ESPHome text sensors appear in Home Assistant as `sensor.*` entities.
+- `shell_command` is not picked up by a quick reload; restart Home Assistant after adding the package.
+- A read produces several hundred states of "BMS history record". Consider excluding that sensor from the recorder.
+- The CSV is GB2312, like the vendor export. The Home Assistant file editor cannot show it because of the degree sign in the header; Excel and DR BMS Monitor can.
+
 ## Decoded lifetime-counter payload
 
 The lifetime response is recognized by:
@@ -703,6 +790,7 @@ Four packs have been run with identical YAML on four sticks. Per pack, only `esp
 - the meaning of the voltage, current, temperature, balance and I/O status bits and the SOC-low alarm bits;
 - the balance status words as a per-cell bitmask, and I/O bit `0x0200` as "balancer active";
 - the complete service `80` basic-parameter block on `ANZ09` and `STD05`;
+- the service `4B` history-log record layout on `STD05`, `LN10` and `ANZ09`;
 - automatic status-LED operation in ESPHome;
 - TCK through R25 to GPIO13 and TDO through R26 to GPIO15.
 
@@ -714,12 +802,13 @@ Four packs have been run with identical YAML on four sticks. Per pack, only `esp
 - the remaining alarm-status bits, the four "low" and four "high" status words, and the machine status;
 - service `81` writes on a real BMS (tested in simulation only);
 - the last 7 bytes of the service `51` response and the meaning of the three serial-number fields;
+- bytes 1 and 28 of a history record, and the depth-of-discharge and run-counter fields;
 - other `B0` data groups (thresholds and balancer settings turned out to be in service `80`) and the `B0` write operation (probably `02`, untested);
-- services such as `44` (alarm information), `47` (system parameters) and `92` (charge/discharge management), known from Pylontech-like protocols; these meanings are hypotheses and untested on this BMS;
+- services such as `44` (alarm information) and `92` (charge/discharge management), known from Pylontech-like protocols; these meanings are hypotheses and untested on this BMS. On this BMS `47` reads the history logging interval (vendor tool);
 - the USB-A pin assignment and signal level of the BMS serial link;
 - whether other Docan PCB revisions have the same pinout and protocol layout.
 
-The single-file ESPHome configuration is read-only. The shared package sends one kind of setting-changing command, the guarded service `81` write of the two balancer settings described above, and only when the write switch is turned on; it sends no control commands. The original firmware's own update mechanism was reconstructed separately by static analysis and is documented, unverified, under [Original firmware update mechanism](#original-firmware-update-mechanism-static-analysis-reconstruction-not-yet-verified).
+The single-file ESPHome configuration is read-only. The shared package sends one kind of setting-changing command, the guarded service `81` write of the two balancer settings described above, and only when the write switch is turned on; it sends no control commands. Its history read (service `4B`) is read-only and never deletes the log. The original firmware's own update mechanism was reconstructed separately by static analysis and is documented, unverified, under [Original firmware update mechanism](#original-firmware-update-mechanism-static-analysis-reconstruction-not-yet-verified).
 
 ## Safety and reproducibility notes
 
@@ -804,12 +893,13 @@ Contributions that would help complete this reverse engineering include:
 - clear photographs of other board revisions;
 - continuity measurements for D1, D4, D38, TDI and TMS;
 - raw frames captured while specific alarms are deliberately active, to decode the remaining alarm-status bits;
-- a read-only scan of `B0` data groups `00`–`0F` (operation `01`) and of services `44` (alarm information in Pylontech-like protocols) and `47` (system parameters), with the raw replies logged. Look for likely cell thresholds such as `0D48` (3400 mV), `0DDE` (3550 mV) and `0E42` (3650 mV). Do not try write operations;
+- a read-only scan of `B0` data groups `00`–`0F` (operation `01`) and of service `44` (alarm information in Pylontech-like protocols), with the raw replies logged. Look for likely cell thresholds such as `0D48` (3400 mV), `0DDE` (3550 mV) and `0E42` (3650 mV). Do not try write operations;
 - a first verified service `81` write on a real BMS, with the read-back result;
 - a passive RS485 listener that monitors several packs from one ESP32;
 - manufacturer documentation for the DR-1363 data groups;
 - confirmation of the YAML on Noon, YP, LN, Panda or other Docan pack families;
-- decoding of the FET status bits and the remaining status words.
+- decoding of the FET status bits and the remaining status words;
+- history-log reads from other BMS firmware versions, with the log depth and the value of the unknown bytes.
 
 Additional leads from an independent analysis of the original `wifi_32` firmware (not yet verified against captured responses from this pack):
 

@@ -1,0 +1,26 @@
+# Dashboard card: history read button, status and record count per pack.
+# Adjust the entity prefixes and the number of packs to your installation.
+type: entities
+title: Docan BMS history
+state_color: true
+entities:
+  - type: section
+    label: Pack 1
+  - entity: button.docan_pack_1_read_bms_history
+    name: Read
+  - entity: sensor.docan_pack_1_bms_history_status
+    name: Status
+  - entity: sensor.docan_pack_1_bms_history_records_read
+    name: Records
+  - entity: button.docan_pack_1_stop_bms_history_read
+    name: Stop
+  - type: section
+    label: Pack 2
+  - entity: button.docan_pack_2_read_bms_history
+    name: Read
+  - entity: sensor.docan_pack_2_bms_history_status
+    name: Status
+  - entity: sensor.docan_pack_2_bms_history_records_read
+    name: Records
+  - entity: button.docan_pack_2_stop_bms_history_read
+    name: Stop

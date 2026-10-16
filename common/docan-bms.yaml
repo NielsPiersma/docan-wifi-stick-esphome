@@ -67,6 +67,19 @@
 #     "Parameter write result".
 #   - In command tails "@@" is replaced by the discovered BMS address.
 #
+# History revision (decoded from DR BMS Monitor V1.0.2.9, History >
+# Standard Data):
+#   - DR-1363 service 0x4B reads the BMS history log one record at a time,
+#     INFO = TYPE, ADR, LENID 004. TYPE 00 = first record, 01 = next record,
+#     02 = repeat the last record. INFO[0] of the answer is 00 while more
+#     records follow and 01 for the last record.
+#   - Read-only. The vendor tool uses 0x45 to DELETE the history and 0x49 to
+#     change the logging interval; neither is ever sent from this package.
+#   - Each record is published raw as "<n>;<ADR>;<INFO hex>" in the text
+#     sensor "BMS history record". A Home Assistant automation appends them
+#     to a file, and docan_history_to_csv.py turns that file into the same
+#     CSV layout as the vendor tool's "Export data".
+#
 # This file is a shared ESPHome package. Do not flash it directly. Each pack
 # has a small device file that only sets the substitution "pack" (1, 2, 3, 4)
 # and includes this package. Everything per pack is derived from it:
@@ -92,6 +105,8 @@ esphome:
           id(docan_invalid_frames).publish_state(id(docan_invalid_frame_count));
           id(docan_valid_frames).publish_state(id(docan_valid_frame_count));
           id(docan_param_write_result).publish_state("No write since boot");
+          id(docan_history_status).publish_state("Idle");
+          id(docan_history_records).publish_state(0);
 
 wifi:
   ssid: !secret wifi_ssid
@@ -201,6 +216,32 @@ globals:
     type: int
     restore_value: false
     initial_value: "-1"
+
+  # History read (service 0x4B), see the header.
+  - id: docan_history_active
+    type: bool
+    restore_value: false
+    initial_value: "false"
+
+  - id: docan_history_count
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+
+  - id: docan_history_last_type
+    type: uint8_t
+    restore_value: false
+    initial_value: "0"
+
+  - id: docan_history_sent_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+
+  - id: docan_history_retries
+    type: uint8_t
+    restore_value: false
+    initial_value: "0"
 
 uart:
   id: docan_uart
@@ -367,6 +408,61 @@ uart:
               ESP_LOGW("docan", "Parameter write REJECTED, RTN %s", rtn.c_str());
               id(docan_param_write_result).publish_state(
                   std::string("Write rejected by BMS, RTN ") + rtn);
+            }
+            return;
+          }
+
+          // DR-1363 service 0x4B: one history record (read-only).
+          if (pending == 0x4B) {
+            if (!id(docan_history_active)) {
+              return;
+            }
+            auto request = [&](uint8_t type) {
+              char tail[16];
+              snprintf(tail, sizeof(tail), "4BC004%02X@@", type);
+              id(docan_history_last_type) = type;
+              id(docan_history_sent_ms) = millis();
+              id(docan_send_addressed_command)->execute(std::string(tail));
+            };
+            auto stop = [&](const std::string &text) {
+              id(docan_history_active) = false;
+              id(docan_history_status).publish_state(text);
+              ESP_LOGW("docan", "History read stopped: %s", text.c_str());
+            };
+            if (rtn != "00" || payload.size() < 46) {
+              id(docan_history_retries)++;
+              if (id(docan_history_retries) > 3) {
+                stop(std::string("Stopped after retries, RTN ") + rtn + ", " +
+                     std::to_string(id(docan_history_count)) + " records");
+              } else {
+                ESP_LOGW("docan", "History record rejected (RTN %s, %u bytes), retry",
+                         rtn.c_str(), static_cast<unsigned>(payload.size()));
+                request(id(docan_history_last_type) == 0 ? 0 : 2);
+              }
+              return;
+            }
+            id(docan_history_retries) = 0;
+            id(docan_history_count)++;
+            std::string line = std::to_string(id(docan_history_count)) + ";";
+            char address[4];
+            snprintf(address, sizeof(address), "%02X;", static_cast<unsigned>(response_address));
+            line += address;
+            for (const uint8_t b : payload) {
+              char h[3];
+              snprintf(h, sizeof(h), "%02X", b);
+              line += h;
+            }
+            ESP_LOGI("docan", "History %s", line.c_str());
+            id(docan_history_record).publish_state(line);
+            id(docan_history_records).publish_state(id(docan_history_count));
+            if (payload[0] == 0x01) {
+              stop(std::string("Done, ") + std::to_string(id(docan_history_count)) + " records");
+            } else {
+              if (id(docan_history_count) % 25 == 0) {
+                id(docan_history_status).publish_state(
+                    std::string("Reading, ") + std::to_string(id(docan_history_count)) + " records");
+              }
+              request(1);
             }
             return;
           }
@@ -1053,6 +1149,28 @@ interval:
                   id(docan_send_addressed_command)->execute(std::string("80E002@@"));
                 }
 
+  # History read watchdog: repeat the last request when no valid answer came
+  # within 6 s (for example a frame with a checksum error).
+  - interval: 2s
+    then:
+      - lambda: |-
+          if (!id(docan_history_active)) return;
+          if (static_cast<uint32_t>(millis() - id(docan_history_sent_ms)) < 6000U) return;
+          id(docan_history_retries)++;
+          if (id(docan_history_retries) > 5) {
+            id(docan_history_active) = false;
+            id(docan_history_status).publish_state(
+                std::string("Stopped: no answer, ") + std::to_string(id(docan_history_count)) + " records");
+            return;
+          }
+          const uint8_t type = id(docan_history_last_type) == 0 ? 0 : 2;
+          char tail[16];
+          snprintf(tail, sizeof(tail), "4BC004%02X@@", type);
+          id(docan_history_last_type) = type;
+          id(docan_history_sent_ms) = millis();
+          ESP_LOGW("docan", "History: no answer, repeating request (type %02X)", type);
+          id(docan_send_addressed_command)->execute(std::string(tail));
+
   # Basic parameters: hourly read (read-only).
   - interval: 3600s
     startup_delay: 90s
@@ -1186,6 +1304,43 @@ button:
 
           id(docan_send_addressed_command)->execute(std::string("80E002@@"));
           id(docan_param_write_arm).turn_off();
+
+  # Read the BMS history log (same data as DR BMS Monitor, History >
+  # Standard Data > Read data). Read-only; it never deletes anything.
+  - platform: template
+    name: "Read BMS history"
+    entity_category: diagnostic
+    icon: mdi:history
+    on_press:
+      - lambda: |-
+          if (id(docan_history_active)) {
+            ESP_LOGW("docan", "History read already running");
+            return;
+          }
+          if (!id(docan_communication).state || id(docan_bms_address) == 0xFF) {
+            id(docan_history_status).publish_state("Not started: no BMS communication");
+            return;
+          }
+          id(docan_history_active) = true;
+          id(docan_history_count) = 0;
+          id(docan_history_retries) = 0;
+          id(docan_history_last_type) = 0;
+          id(docan_history_sent_ms) = millis();
+          id(docan_history_records).publish_state(0);
+          id(docan_history_status).publish_state("Reading");
+          id(docan_send_addressed_command)->execute(std::string("4BC00400@@"));
+
+  - platform: template
+    name: "Stop BMS history read"
+    entity_category: diagnostic
+    icon: mdi:stop
+    on_press:
+      - lambda: |-
+          if (id(docan_history_active)) {
+            id(docan_history_active) = false;
+            id(docan_history_status).publish_state(
+                std::string("Stopped by user, ") + std::to_string(id(docan_history_count)) + " records");
+          }
 
   - platform: template
     name: "Reset frame counters"
@@ -1358,7 +1513,29 @@ text_sensor:
     icon: mdi:clipboard-check
     entity_category: diagnostic
 
+  - platform: template
+    id: docan_history_status
+    name: "BMS history status"
+    icon: mdi:history
+    entity_category: diagnostic
+
+  # Raw history record "<n>;<ADR>;<INFO hex>". A Home Assistant automation
+  # appends every record to a file.
+  - platform: template
+    id: docan_history_record
+    name: "BMS history record"
+    icon: mdi:file-document-outline
+    entity_category: diagnostic
+
 sensor:
+  - platform: template
+    id: docan_history_records
+    name: "BMS history records read"
+    icon: mdi:counter
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: never
+
   - platform: template
     id: docan_detected_bms_address
     name: "Detected BMS address"

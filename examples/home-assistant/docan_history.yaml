@@ -1,0 +1,150 @@
+# Docan BMS history export (Home Assistant package for /config/packages/)
+# Entity IDs: adjust the prefixes (garage_docan_pack_N / docan_pack_N) to
+# the names in your installation.
+#
+# The ESPHome sticks read the BMS history log (DR-1363 service 0x4B, the same
+# data as DR BMS Monitor > History > Standard Data) with the button
+# "Read BMS history". Every record arrives in the text sensor
+# "BMS history record". This package appends each record to
+#   /config/docan/history/docan_history_pack_<pack>_<date>.txt
+# and, when a pack reports "Done", converts all files in that folder to the
+# CSV layout of the vendor tool's "Export data":
+#   /config/docan/history/HistoryStandardData_docan_history_pack_<pack>_<date>.csv
+#
+# Needs in /config/docan/: docan_history_append.py and docan_history_to_csv.py
+
+shell_command:
+  docan_history_append: "python3 /config/docan/docan_history_append.py {{ pack }} {{ record }}"
+  # No template, so Home Assistant runs this through a shell and *.txt works.
+  docan_history_convert: "python3 /config/docan/docan_history_to_csv.py /config/docan/history/*.txt"
+
+automation:
+  - id: docan_history_to_file
+    alias: "Docan - BMS history to file"
+    description: >-
+      Writes every Docan BMS history record to a text file in
+      /config/docan/history (one file per read session).
+    mode: queued
+    max: 500
+    max_exceeded: warning
+    triggers:
+      - trigger: state
+        entity_id:
+          - sensor.garage_docan_pack_1_bms_history_record
+          - sensor.garage_docan_pack_2_bms_history_record
+          - sensor.garage_docan_pack_3_bms_history_record
+          - sensor.garage_docan_pack_4_bms_history_record
+          - sensor.docan_pack_1_bms_history_record
+          - sensor.docan_pack_2_bms_history_record
+          - sensor.docan_pack_3_bms_history_record
+          - sensor.docan_pack_4_bms_history_record
+    conditions:
+      - condition: template
+        value_template: >-
+          {{ trigger.to_state is not none
+             and trigger.to_state.state | regex_match('^\d+;[0-9A-F]{2};[0-9A-F]+$') }}
+    actions:
+      - action: shell_command.docan_history_append
+        data:
+          pack: "{{ trigger.entity_id | regex_findall_index('pack_([1-4])_') }}"
+          record: "{{ trigger.to_state.state }}"
+
+  - id: docan_history_convert_when_done
+    alias: "Docan - BMS history to CSV"
+    description: >-
+      Converts the history files to the CSV layout of DR BMS Monitor when a
+      pack has finished reading.
+    mode: queued
+    triggers:
+      - trigger: state
+        entity_id:
+          - sensor.garage_docan_pack_1_bms_history_status
+          - sensor.garage_docan_pack_2_bms_history_status
+          - sensor.garage_docan_pack_3_bms_history_status
+          - sensor.garage_docan_pack_4_bms_history_status
+          - sensor.docan_pack_1_bms_history_status
+          - sensor.docan_pack_2_bms_history_status
+          - sensor.docan_pack_3_bms_history_status
+          - sensor.docan_pack_4_bms_history_status
+    conditions:
+      - condition: template
+        value_template: >-
+          {{ trigger.to_state is not none
+             and trigger.to_state.state.startswith('Done')
+             or (trigger.to_state is not none and trigger.to_state.state.startswith('Stopped')) }}
+    actions:
+      # Wait until the last queued records are written.
+      - delay: "00:00:20"
+      - action: shell_command.docan_history_convert
+      - action: persistent_notification.create
+        data:
+          notification_id: "docan_history_{{ trigger.entity_id | regex_findall_index('pack_([1-4])_') }}"
+          title: "Docan BMS history pack {{ trigger.entity_id | regex_findall_index('pack_([1-4])_') }}"
+          message: >-
+            {{ trigger.to_state.state }}. CSV files are in
+            /config/docan/history.
+
+  # Reads the BMS history automatically when a pack reports a voltage
+  # protection (cell/pack over- or undervoltage, cell difference, lock), and
+  # once more after the protection is released. ANZ09 keeps only 500 records
+  # and overwrites them within hours, so without this the event is lost.
+  # Mask 17935 = 0x460F: 0x0001 cell OV, 0x0002 cell UV, 0x0004 pack OV,
+  # 0x0008 pack UV, 0x0200 OV lock, 0x0400 UV lock, 0x4000 cell difference.
+  - id: docan_history_read_on_protection
+    alias: "Docan - BMS history read on protection"
+    description: >-
+      Presses "Read BMS history" on the pack that reports a voltage
+      protection, 60 s after it starts and 60 s after it is released.
+    mode: queued
+    max: 10
+    triggers:
+      - trigger: state
+        entity_id:
+          - sensor.garage_docan_pack_1_raw_voltage_status
+          - sensor.garage_docan_pack_2_raw_voltage_status
+          - sensor.garage_docan_pack_3_raw_voltage_status
+          - sensor.garage_docan_pack_4_raw_voltage_status
+          - sensor.docan_pack_1_raw_voltage_status
+          - sensor.docan_pack_2_raw_voltage_status
+          - sensor.docan_pack_3_raw_voltage_status
+          - sensor.docan_pack_4_raw_voltage_status
+    conditions:
+      - condition: template
+        value_template: >-
+          {% set f = trigger.from_state.state if trigger.from_state else '' %}
+          {% set t = trigger.to_state.state if trigger.to_state else '' %}
+          {{ is_number(f) and is_number(t)
+             and (f | int | bitwise_and(17935) > 0) != (t | int | bitwise_and(17935) > 0) }}
+    variables:
+      pack: "{{ trigger.entity_id | regex_findall_index('pack_([1-4])_') }}"
+      phase: >-
+        {{ 'started' if trigger.to_state.state | int | bitwise_and(17935) > 0 else 'released' }}
+      bits: "{{ '0x%04X' % (trigger.to_state.state | int) }}"
+      buttons: >-
+        {% set ids = states.button | map(attribute='entity_id') | list %}
+        {{ ['button.garage_docan_pack_' ~ pack ~ '_read_bms_history',
+            'button.docan_pack_' ~ pack ~ '_read_bms_history']
+           | select('in', ids) | list }}
+      statuses: >-
+        {{ ['sensor.garage_docan_pack_' ~ pack ~ '_bms_history_status',
+            'sensor.docan_pack_' ~ pack ~ '_bms_history_status']
+           | select('has_value') | list }}
+    actions:
+      - action: persistent_notification.create
+        data:
+          notification_id: "docan_protection_{{ pack }}"
+          title: "Docan pack {{ pack }}: voltage protection {{ phase }}"
+          message: >-
+            Voltage status {{ bits }} at {{ now().strftime('%Y-%m-%d %H:%M:%S') }}.
+            The BMS history is read automatically in 60 s.
+      - delay: "00:01:00"
+      # Wait until a running read on this pack has finished.
+      - wait_template: >-
+          {{ statuses | map('states') | select('match', 'Reading') | list | count == 0 }}
+        timeout: "00:30:00"
+        continue_on_timeout: false
+      - condition: template
+        value_template: "{{ buttons | count > 0 }}"
+      - action: button.press
+        target:
+          entity_id: "{{ buttons }}"
