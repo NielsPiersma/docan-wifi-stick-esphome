@@ -857,8 +857,8 @@ uart:
             id(docan_operating_state).publish_state("Idle");
           }
 
-          // The final status words are retained as raw diagnostics until all
-          // vendor-specific bit meanings have been confirmed.
+          // Final status words: published raw as diagnostics and decoded below
+          // with the bit meanings from the vendor tool.
           if (payload.size() >= position + 33U) {
             const uint16_t voltage_status = be16(position);
             position += 2;
@@ -947,8 +947,8 @@ uart:
               known |= bit.mask;
               if (current_status & bit.mask) add(warnings, bit.text);
             }
-            // 0x0001 is set while charging (seen on pack 4), probably 0x0002
-            // while discharging. These are states, not warnings.
+            // 0x0001 is set while charging and 0x0002 while discharging
+            // (confirmed). These are states, not warnings.
             unknown("Current", current_status & ~known & ~0x0003);
 
             for (uint8_t i = 0; i < 8; i++) {
@@ -1034,7 +1034,7 @@ script:
           char address[3];
           snprintf(address, sizeof(address), "%02X", id(docan_bms_address));
 
-          // "@@" in a tail is the BMS address inside INFO (services 80/81).
+          // "@@" in a tail is the BMS address inside INFO (services 80, 81 and 4B).
           std::string tail = command_tail;
           size_t marker;
           while ((marker = tail.find("@@")) != std::string::npos) {
