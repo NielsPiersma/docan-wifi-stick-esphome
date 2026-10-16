@@ -7,7 +7,11 @@
 
 ## Home Assistant result
 
-The decoded BMS data is published as native ESPHome entities. This dashboard combines four battery packs, each with its own stick running the same YAML, and shows stored energy, state of charge, individual cell voltages, cell delta, temperatures, capacity and state of health.
+The decoded BMS data is published as native ESPHome entities. The dashboard below combines four battery packs. Each pack has its own stick running the same package, and the dashboard shows stored energy, state of charge, cell voltages, cell delta, temperatures, capacity and state of health.
+
+![Four Docan packs next to the Deye inverter](images/installation-four-packs.jpg)
+
+*The four DoCan ZZ 16 kWh packs, connected in parallel to a Deye hybrid inverter. Each pack has its own Wi-Fi stick running ESPHome.*
 
 ![Home Assistant overview showing stored energy and state of charge of four Docan battery packs](images/home-assistant-overview.png)
 
@@ -17,21 +21,32 @@ Each pack has its own cell and health cards. Packs 1 and 2 use the older BMS gen
 
 ![Cell voltages and health of packs 3 and 4](images/home-assistant-packs-3-4.png)
 
+### Identity, status and BMS settings
+
+One table compares the four packs: identity, communication, decoded protections and warnings, balancer state, FET status, current, state of charge, cell delta and the BMS settings read with service `80`. Settings that differ between packs are shown in orange. Here they are the balancer and overvoltage settings of the two BMS generations; see [Factory settings observed](#factory-settings-observed). Serial numbers are redacted in this screenshot.
+
+![Identity, status and BMS settings of four packs, with serial numbers redacted](images/home-assistant-diagnostics.png)
+
 ### Historical monitoring
 
-Because the values are normal Home Assistant entities, they can be recorded and compared over time. This makes it possible to monitor pack synchronization, cell-voltage drift, temperature differences and balancing behaviour. The temperature graph shows the environment temperature of the `ANZ09` packs rising while their cell delta is high, which is described under [Environment temperature as a balancing indicator](#environment-temperature-as-a-balancing-indicator).
+Because the values are normal Home Assistant entities, they can be recorded and compared over time. This makes it possible to monitor pack synchronization, cell-voltage drift, temperature differences and balancing behaviour.
 
-![Home Assistant history graphs for state of charge, temperatures, cell delta and cell voltages](images/home-assistant-history.png)
+The temperature graph shows the environment temperature of the `ANZ09` packs rising to about 36 °C while their cell delta is high. This is described under [Environment temperature as a balancing indicator](#environment-temperature-as-a-balancing-indicator).
 
-<details>
-<summary>ESPHome and BMS diagnostics</summary>
+![State of charge over 24 hours and temperatures over 48 hours for four packs](images/home-assistant-trends.png)
 
-The diagnostic entities expose BMS identity, valid-frame counters, raw status words and the automatically discovered BMS address and pack number. Serial numbers are redacted in this screenshot.
+The cell delta stays below 30 mV for most of the week. It rises sharply only at the top of a full charge, here to about 280 mV on the `ANZ09` packs.
 
-![Identity and BMS status of four packs, with serial numbers redacted](images/home-assistant-diagnostics.png)
+![Cell voltage delta of four packs over seven days](images/home-assistant-cell-delta-7d.png)
 
-</details>
+The cell-voltage graphs show the same full charge per pack:
 
+- On packs 1 and 2 (`STD05`/`LN10`), the cells peak together at about 3.47 V.
+- On packs 3 and 4 (`ANZ09`), one cell runs ahead to 3.50–3.58 V. After charging stops, it falls back only slowly, over several hours, before the pack returns to the plateau.
+
+![Cell voltages of packs 1 and 2 over 24 hours](images/home-assistant-cells-packs-1-2.png)
+
+![Cell voltages of packs 3 and 4 over 24 hours](images/home-assistant-cells-packs-3-4.png)
 
 ## Summary
 
