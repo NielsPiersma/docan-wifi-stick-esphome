@@ -840,6 +840,12 @@ The converter decodes it as 2026-10-14 23:24:07 (BMS clock), event *Enter DISCH*
 
 [`tools/docan-snapshot-template.jinja`](tools/docan-snapshot-template.jinja) prints identity, live values, BMS settings, status and all cell voltages of up to four packs as plain text. Paste it into Home Assistant under *Developer tools > Template* and copy the output into a support request. It contains serial numbers, so redact them before sharing publicly. Useful moments for a snapshot are when the highest cell of a pack passes 3.45 V and during balancing after reaching 100 %.
 
+### Discharge check template
+
+[`tools/docan-discharge-check-template.jinja`](tools/docan-discharge-check-template.jinja) is a text check for use during a full discharge and the charge that follows it. It lists, per pack, communication, SOC, voltage, current, lowest and highest cell, temperatures, balancer state, protections, warnings and the raw status words. It also flags packs that report low voltage, an alarm bit other than SOC low, or no communication. Like the snapshot template, it runs under *Developer tools > Template*, and its labels are in Dutch.
+
+The pack part needs only the shared package. The Deye part uses the entity names of a Deye inverter integration. The discharge and grid-session parts refer to the author's own helpers, scripts and automations, which are not in this repository. Entities that are missing show as "–".
+
 ### Running several packs
 
 Four packs have been run with identical YAML on four sticks. Per pack, only `esphome.name`, `friendly_name`, `wifi.use_address` (when a fixed address is used), the fallback AP SSID and the two device-specific secrets differ.

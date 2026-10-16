@@ -1,0 +1,113 @@
+{#- Docan/Deye check during a full discharge and the charge afterwards.
+    Paste into Home Assistant > Developer tools > Template and copy the whole
+    output. Labels are in Dutch.
+
+    The PACKS part only needs the shared ESPHome package (entity IDs
+    sensor.docan_pack_<n>_...; change 'docan_pack_' in the macros ps and pb
+    if your entities are named differently).
+    The DEYE part uses the entity names of a Deye inverter integration.
+    The ONTLADEN and NETSESSIE parts and the checks refer to the author's own
+    Home Assistant helpers, scripts and automations (deye_full_discharge_*,
+    deye_load_from_grid_*, ...), which are not part of this repository.
+    Missing entities show as "–" or "niet gevonden". -#}
+{%- macro v(e, d='–') -%}{{ states(e) if has_value(e) else d }}{%- endmacro -%}
+{%- macro ps(p, k) -%}
+  {%- set e = 'sensor.docan_pack_' ~ p ~ '_' ~ k -%}
+  {%- if not has_value(e) -%}–{%- elif is_number(states(e)) -%}
+    {%- set x = states(e) | float -%}{{ x | int if x == x | int else x | round(3) }}
+  {%- else -%}{{ states(e) }}{%- endif -%}
+{%- endmacro -%}
+{%- macro pb(p, k) -%}
+  {%- set e = 'binary_sensor.docan_pack_' ~ p ~ '_' ~ k -%}
+  {%- if has_value(e) -%}{{ states(e) }}{%- else -%}–{%- endif -%}
+{%- endmacro -%}
+{%- macro hx(x) -%}{%- if is_number(x) -%}0x{{ '%04X' % (x | int) }}{%- else -%}–{%- endif -%}{%- endmacro -%}
+{%- macro auto(id) -%}
+  {%- set ns = namespace(t='niet gevonden') -%}
+  {%- for a in states.automation if a.attributes.get('id') == id -%}
+    {%- set lt = a.attributes.get('last_triggered') -%}
+    {%- set ns.t = a.state ~ ', laatst ' ~ (as_local(lt).strftime('%d-%m %H:%M:%S') if lt else '-') ~ ', lopend ' ~ a.attributes.get('current', 0) -%}
+  {%- endfor -%}{{ ns.t }}
+{%- endmacro -%}
+=== Docan ontlaadcontrole {{ now().strftime('%Y-%m-%d %H:%M:%S') }} ===
+
+DEYE
+SOC {{ v('sensor.inverter_battery') }}% | accu {{ v('sensor.inverter_battery_power') }} W, {{ v('sensor.inverter_battery_voltage') }} V, {{ v('sensor.inverter_battery_current') }} A
+Net {{ v('sensor.inverter_grid_power') }} W | zon (GEN) {{ v('sensor.inverter_microinverter_power') }} W | temp {{ v('sensor.inverter_temperature') }} °C
+Work mode {{ v('select.inverter_work_mode') }} | pattern {{ v('select.inverter_energy_pattern') }} | TOU {{ v('select.inverter_time_of_use') }}
+Max charge {{ v('number.inverter_battery_max_charging_current') }} A | max discharge {{ v('number.inverter_battery_max_discharging_current') }} A
+Grid charge {{ v('number.inverter_battery_grid_charging_current') }} A ({{ v('switch.inverter_battery_grid_charging') }}) | peak shaving {{ v('number.inverter_grid_peak_shaving') }} W ({{ v('switch.inverter_grid_peak_shaving') }})
+Solar sell {{ v('switch.inverter_export_surplus') }} | max sell {{ v('number.inverter_export_surplus_power') }} W | grid max export {{ v('number.inverter_grid_max_export_power') }} W | zero export {{ v('number.inverter_zero_export_power') }} W
+Low/shutdown/restart SOC {{ v('number.inverter_battery_low_soc') }} / {{ v('number.inverter_battery_shutdown_soc') }} / {{ v('number.inverter_battery_restart_soc') }} %
+Programma's:{% for n in range(1, 7) %}
+  {{ n }}: {{ v('time.inverter_program_' ~ n ~ '_time') }} | {{ v('select.inverter_program_' ~ n ~ '_charging') }} | SOC {{ v('number.inverter_program_' ~ n ~ '_soc') }}% | {{ v('number.inverter_program_' ~ n ~ '_power') }} W{% endfor %}
+Alarm/fout/verbinding: {{ v('binary_sensor.inverter_battery_alarm') }} / {{ v('binary_sensor.inverter_battery_fault') }} / {{ v('binary_sensor.inverter_connection') }}
+
+ONTLADEN
+Actief {{ v('input_boolean.deye_full_discharge_active') }} | Export First {{ v('input_boolean.deye_full_discharge_export') }} | daarna laden {{ v('input_boolean.deye_full_discharge_autocharge') }} met {{ v('input_number.deye_load_from_grid_custom_current') }} A
+Ondergrens {{ v('input_number.deye_full_discharge_floor_soc') }}% | min. cel {{ v('input_number.deye_full_discharge_min_cell_voltage') }} V
+Bewaard: {{ v('input_text.deye_full_discharge_saved') }}
+{%- set ts = state_attr('input_datetime.deye_full_discharge_started', 'timestamp') %}
+Gestart {{ v('input_datetime.deye_full_discharge_started') }}{% if ts and is_state('input_boolean.deye_full_discharge_active', 'on') %} | looptijd {{ ((now().timestamp() - ts) / 3600) | round(1) }} u{% endif %}
+{%- set bp = states('sensor.inverter_battery_power') | float(0) %}
+{%- set soc = states('sensor.inverter_battery') | float(0) %}
+{%- set fl = states('input_number.deye_full_discharge_floor_soc') | float(12) %}
+{%- if bp > 50 %}
+Schatting: nog {{ ((soc - fl) / 100 * 64) | round(1) }} kWh, ongeveer {{ ((soc - fl) / 100 * 64 / (bp / 1000)) | round(1) }} u bij {{ bp | round(0) }} W
+{%- endif %}
+Scripts: start {{ v('script.deye_full_discharge_start') }} | stop {{ v('script.deye_full_discharge_stop') }} | netladen {{ v('script.deye_load_from_grid') }} | netladen stop {{ v('script.deye_stop_load_from_grid') }}
+Watchdog ontladen: {{ auto('deye_full_discharge_watchdog') }}
+Laadplafond: {{ auto('deye_charge_ceiling') }}
+Watchdog netladen: {{ auto('deye_load_from_grid_watchdog') }}
+
+NETSESSIE
+Actief {{ v('input_boolean.deye_load_from_grid_active') }} | registers {{ v('input_boolean.deye_load_from_grid_configuring') }} | fail-safe {{ v('input_boolean.deye_charging_failsafe') }}
+Arbitrage: sessie {{ v('input_boolean.battery_arbitrage_session_active') }} | transactie {{ v('input_boolean.battery_arbitrage_transaction_in_progress') }}
+
+PACKS
+{%- set lim = states('input_number.deye_full_discharge_min_cell_voltage') | float(3.0) %}
+{%- set ns = namespace(minv=9, minp=0, warn=[]) %}
+{%- for p in range(1, 5) %}
+{%- set lo = ps(p, 'lowest_cell_voltage') | float(9) %}
+{%- if lo < ns.minv %}{% set ns.minv = lo %}{% set ns.minp = p %}{% endif %}
+{%- set rv = ps(p, 'raw_voltage_status') | int(0) %}
+{%- set ra = ps(p, 'raw_alarm_status') | int(0) %}
+
+Pack {{ p }}: comm {{ pb(p, 'bms_communication') }} | SOC {{ ps(p, 'state_of_charge') }}% | {{ ps(p, 'pack_voltage') }} V | {{ ps(p, 'pack_current') }} A
+  cel min {{ ps(p, 'lowest_cell_voltage') }} V (#{{ ps(p, 'lowest_cell_number') }}) max {{ ps(p, 'highest_cell_voltage') }} V (#{{ ps(p, 'highest_cell_number') }}) delta {{ ps(p, 'cell_voltage_delta') }} mV
+  MOS {{ ps(p, 'mos_temperature') }} °C | env {{ ps(p, 'environment_temperature') }} °C | balancer {{ pb(p, 'balancer_active') }} ({{ ps(p, 'balancing_cells') }})
+  beveiliging {{ ps(p, 'bms_protections') }} | waarschuwing {{ ps(p, 'bms_warnings') }}
+  raw V/I/T/A {{ hx(ps(p, 'raw_voltage_status')) }} {{ hx(ps(p, 'raw_current_status')) }} {{ hx(ps(p, 'raw_temperature_status')) }} {{ hx(ps(p, 'raw_alarm_status')) }} | FET {{ hx(ps(p, 'raw_fet_status')) }}
+{#- 1194 = 0x04AA: cell/pack undervoltage protection and warning, undervoltage lock. -#}
+{%- if rv | bitwise_and(1194) > 0 %}{% set ns.warn = ns.warn + ['pack ' ~ p ~ ': BMS meldt lage spanning'] %}{% endif %}
+{#- 65151 = 0xFE7F: every alarm bit except SOC low (0x0080, 0x0100). -#}
+{%- if ra | bitwise_and(65151) > 0 %}{% set ns.warn = ns.warn + ['pack ' ~ p ~ ': alarmbit buiten SOC-laag'] %}{% endif %}
+{%- if not (pb(p, 'bms_communication') == 'on') %}{% set ns.warn = ns.warn + ['pack ' ~ p ~ ': geen communicatie'] %}{% endif %}
+{%- endfor %}
+
+CONTROLES
+{%- set act = is_state('input_boolean.deye_full_discharge_active', 'on') %}
+{%- set ok = namespace(l=[]) %}
+{%- if act %}
+{%- set ok.l = ok.l + [('Max charge 0 A', states('number.inverter_battery_max_charging_current') | int(-1) == 0)] %}
+{%- set ok.l = ok.l + [('Low SOC = ondergrens', states('number.inverter_battery_low_soc') | int(-1) == fl | int)] %}
+{%- set pc = namespace(ok=true) %}
+{%- for n in range(1, 7) %}{% if states('number.inverter_program_' ~ n ~ '_soc') | int(-1) != fl | int %}{% set pc.ok = false %}{% endif %}{% endfor %}
+{%- set ok.l = ok.l + [('Programma-SOC = ondergrens', pc.ok)] %}
+{%- set ok.l = ok.l + [('Shutdown SOC < ondergrens', states('number.inverter_battery_shutdown_soc') | int(100) < fl | int)] %}
+{%- if is_state('input_boolean.deye_full_discharge_export', 'on') %}
+{%- set ok.l = ok.l + [('Work mode Export First', is_state('select.inverter_work_mode', 'Export First'))] %}
+{%- endif %}
+{%- set ok.l = ok.l + [('Accu ontlaadt', bp > 0)] %}
+{%- else %}
+{%- set ok.l = ok.l + [('Geen Export First buiten een ontlaadsessie', not is_state('select.inverter_work_mode', 'Export First'))] %}
+{%- set ok.l = ok.l + [('Low SOC normaal (>= 20%)', states('number.inverter_battery_low_soc') | int(0) >= 20)] %}
+{%- endif %}
+{%- set ok.l = ok.l + [('Laagste cel ' ~ (ns.minv | round(3)) ~ ' V (pack ' ~ ns.minp ~ ') boven ' ~ lim ~ ' V', ns.minv > lim)] %}
+{%- set ok.l = ok.l + [('Deye geen alarm of fout', is_state('binary_sensor.inverter_battery_alarm', 'off') and is_state('binary_sensor.inverter_battery_fault', 'off'))] %}
+{%- for name, good in ok.l %}
+[{{ 'OK  ' if good else 'LET OP' }}] {{ name }}
+{%- endfor %}
+{%- for w in ns.warn %}
+[LET OP] {{ w }}
+{%- endfor %}
