@@ -17,6 +17,8 @@ The decoded BMS data is published as native ESPHome entities. The dashboard belo
 
 Each pack has its own cell and health cards. Packs 1 and 2 use the older BMS generation, packs 3 and 4 the newer `ANZ09` generation.
 
+The "Packs" view shown here is available as an example in [`examples/home-assistant/docan_dashboard.yaml`](examples/home-assistant/docan_dashboard.yaml). It needs the custom cards `button-card` and `apexcharts-card`, and its labels are in Dutch.
+
 ![Cell voltages and health of packs 1 and 2](images/home-assistant-packs-1-2.png)
 
 ![Cell voltages and health of packs 3 and 4](images/home-assistant-packs-3-4.png)

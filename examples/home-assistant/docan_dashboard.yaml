@@ -1,0 +1,2551 @@
+# Example Home Assistant dashboard for four Docan packs (the "Packs" view
+# shown in the README screenshots). Needs the custom cards button-card and
+# apexcharts-card (HACS).
+#
+# Entity IDs follow the shared package: sensor.docan_pack_<n>_..., from the
+# device name docan-pack-<n>. Adjust them if your devices are named
+# differently. The summary card also uses the battery power and SoC of the
+# inverter (sensor.inverter_battery_power, sensor.inverter_battery, from a
+# Deye integration); replace or remove those if you use another inverter.
+#
+# Labels are in Dutch. Paste the whole file into a new dashboard:
+# Edit dashboard > Raw
+# configuration editor.
+button_card_templates:
+  neon:
+    show_state: false
+    tap_action:
+      action: none
+    hold_action:
+      action: none
+    variables:
+      accent: '#00E5FF'
+    styles:
+      card:
+      - background: 'radial-gradient(circle at 15% 0%, #1b2450 0%, #0b1022 65%)'
+      - color: '#e8ecff'
+      - border: '[[[ return ''1px solid '' + variables.accent + ''38''; ]]]'
+      - border-radius: 18px
+      - box-shadow: none
+      - padding: 18px
+      grid:
+      - grid-template-areas: '"i n" "body body"'
+      - grid-template-columns: 34px 1fr
+      - grid-template-rows: min-content min-content
+      name:
+      - justify-self: start
+      - font-size: 16px
+      - font-weight: 700
+      - letter-spacing: .3px
+      - white-space: normal
+      - text-align: left
+      icon:
+      - width: 26px
+      - color: '[[[ return variables.accent; ]]]'
+      custom_fields:
+        body:
+        - justify-self: stretch
+        - width: 100%
+        - text-align: left
+        - white-space: normal
+    extra_styles: |
+      @keyframes flow { to { background-position: 200% 0; } }
+      @keyframes glow { 0%,100% { box-shadow: 0 0 6px var(--c); } 50% { box-shadow: 0 0 22px var(--c); } }
+      @keyframes blink { 0%,100% { opacity:1; } 50% { opacity:.25; } }
+      @keyframes dash { to { stroke-dashoffset: -12; } }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      @keyframes mv { to { background-position: 0 -34px; } }
+      @keyframes pulse { 0%,100% { filter:brightness(1); } 50% { filter:brightness(1.6); } }
+      .k { font-size:11px; letter-spacing:3px; opacity:.6; text-transform:uppercase; }
+      .big { font-size:44px; font-weight:800; line-height:1.1; background:linear-gradient(90deg,var(--g1,#00e5ff),var(--g2,#ff4fd8)); -webkit-background-clip:text; background-clip:text; color:transparent; }
+      .big small, .mid small { font-size:18px; }
+      .mid { font-size:30px; font-weight:800; line-height:1.15; }
+      .sub { opacity:.75; font-size:14px; margin-top:2px; }
+      .note { opacity:.55; font-size:12px; margin-top:10px; line-height:1.4; white-space:normal; }
+      .bar { height:8px; border-radius:6px; background:rgba(255,255,255,.08); margin-top:10px; overflow:hidden; }
+      .bar > div { height:100%; border-radius:6px; background:linear-gradient(90deg,var(--g1,#00e5ff),var(--g2,#ff4fd8),var(--g1,#00e5ff)); background-size:200% 100%; animation:flow 4s linear infinite; }
+      .bar.solid { height:6px; margin-top:4px; }
+      .bar.solid > div { background:var(--c); box-shadow:0 0 8px var(--c); animation:none; }
+      .r { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:5px 0; font-size:14px; }
+      .r > span { opacity:.7; display:flex; align-items:center; gap:8px; }
+      .r > span ha-icon { --mdc-icon-size:18px; color:var(--c,#8a93b8); opacity:1; }
+      .r b { text-align:right; }
+      .sep { border-top:1px solid rgba(255,255,255,.08); margin-top:8px; padding-top:8px; }
+      .mode { display:flex; flex-direction:column; margin-top:12px; padding:8px 12px; border-radius:12px; background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.08); }
+      .mode b { font-size:15px; letter-spacing:2px; display:flex; align-items:center; gap:6px; }
+      .mode b ha-icon { --mdc-icon-size:20px; }
+      .mode span { font-size:12px; opacity:.6; white-space:normal; }
+      .mode.on { border-color:color-mix(in srgb, var(--c) 55%, transparent); box-shadow:0 0 14px color-mix(in srgb, var(--c) 25%, transparent); }
+      .mode.on b { color:var(--c); }
+      .chips { display:flex; gap:6px; flex-wrap:wrap; margin-top:12px; }
+      .chip { flex:1; min-width:62px; border-radius:10px; padding:6px 6px; text-align:center; background:color-mix(in srgb, var(--c) 12%, transparent); border:1px solid color-mix(in srgb, var(--c) 45%, transparent); }
+      .chip span { display:block; font-size:10px; opacity:.6; letter-spacing:1px; text-transform:uppercase; }
+      .chip b { font-size:14px; color:var(--c); white-space:nowrap; }
+      .led { display:inline-block; flex:0 0 8px; width:8px; height:8px; border-radius:50%; background:#5c6378; }
+      .led.on { background:#39ff88; box-shadow:0 0 8px #39ff88; animation:blink 1.6s infinite; }
+      .led.bad { background:#ff3d71; box-shadow:0 0 10px #ff3d71; animation:blink .8s infinite; }
+      table.t { width:100%; border-collapse:collapse; font-size:14px; margin-top:8px; }
+      table.t th { font-weight:400; font-size:10px; letter-spacing:1px; text-transform:uppercase; opacity:.55; text-align:right; padding-bottom:4px; }
+      table.t td { text-align:right; padding:6px 0; border-top:1px solid rgba(255,255,255,.06); }
+      table.t th:first-child, table.t td:first-child { text-align:left; }
+      table.t tr.win td { color:#39ff88; font-weight:700; text-shadow:0 0 10px rgba(57,255,136,.5); }
+      .hero { display:flex; flex-wrap:wrap; gap:20px; align-items:center; justify-content:space-between; }
+      .tot { flex:1 1 200px; min-width:180px; }
+      .ring { width:104px; height:104px; flex:0 0 104px; border-radius:50%; background:conic-gradient(var(--c) var(--d), rgba(255,255,255,.08) 0); display:flex; align-items:center; justify-content:center; box-shadow:0 0 18px color-mix(in srgb, var(--c) 40%, transparent); }
+      .ring > div { width:84px; height:84px; border-radius:50%; background:#0b1022; display:flex; flex-direction:column; align-items:center; justify-content:center; }
+      .ring b { font-size:18px; color:var(--c); }
+      .ring span { font-size:10px; letter-spacing:2px; opacity:.55; }
+      .bw { position:relative; padding-top:9px; }
+      .bw::before { content:''; position:absolute; top:0; left:50%; margin-left:-15px; width:30px; height:9px; border-radius:4px 4px 0 0; background:var(--c); }
+      .bat { position:relative; width:80px; height:140px; border:3px solid var(--c); border-radius:14px; overflow:hidden; background:#0b1022; animation:glow 3s ease-in-out infinite; }
+      .fill { position:absolute; left:0; right:0; bottom:0; background:linear-gradient(to top, color-mix(in srgb, var(--c) 30%, #0b1022), var(--c)); }
+      .fill::before, .fill::after { content:''; position:absolute; left:50%; margin-left:-110px; width:220px; height:220px; border-radius:42%; }
+      .fill::before { bottom:calc(100% - 9px); background:#0b1022; animation:spin 7s linear infinite; }
+      .fill::after { bottom:calc(100% - 13px); background:rgba(11,16,34,.45); animation:spin 11s linear infinite reverse; }
+      .fx { position:absolute; inset:0; z-index:1; pointer-events:none; }
+      .fx.laden, .fx.ontladen { background:repeating-linear-gradient(0deg, transparent 0 14px, rgba(255,255,255,.14) 14px 17px); animation:mv 1.1s linear infinite; }
+      .fx.ontladen { animation-direction:reverse; }
+      .lbl { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:28px; font-weight:800; color:#fff; text-shadow:0 0 6px #000,0 0 2px #000; z-index:2; }
+      .lbl small { font-size:14px; margin-left:1px; }
+      .flow { position:relative; width:100%; aspect-ratio:3/2; margin-top:6px; }
+      .flow svg { position:absolute; inset:0; width:100%; height:100%; overflow:visible; }
+      .ln { fill:none; stroke:var(--c); stroke-width:3; stroke-linecap:round; vector-effect:non-scaling-stroke; stroke-dasharray:2 10; filter:drop-shadow(0 0 4px var(--c)); }
+      .ln.in { animation:dash .9s linear infinite; }
+      .ln.out { animation:dash .9s linear infinite reverse; }
+      .ln.idle { opacity:.15; stroke-dasharray:none; filter:none; }
+      .jn { fill:#e8ecff; filter:drop-shadow(0 0 6px #fff); }
+      .fn { position:absolute; transform:translate(-50%,-50%); width:96px; padding:6px 2px; border-radius:14px; text-align:center; background:rgba(11,16,34,.94); border:1px solid color-mix(in srgb, var(--c) 55%, transparent); box-shadow:0 0 14px color-mix(in srgb, var(--c) 30%, transparent); z-index:1; line-height:1.2; }
+      .fn ha-icon { --mdc-icon-size:22px; color:var(--c); }
+      .fn .fv { font-size:15px; font-weight:800; color:var(--c); white-space:nowrap; }
+      .fn .fl { font-size:9px; letter-spacing:2px; opacity:.6; }
+      .fn.zon { left:50%; top:18%; } .fn.net { left:17%; top:50%; } .fn.acc { left:83%; top:50%; } .fn.huis { left:50%; top:82%; }
+      .g3 { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; margin-top:12px; }
+      .pc { border-radius:12px; padding:8px; background:color-mix(in srgb, var(--c) 8%, transparent); border:1px solid color-mix(in srgb, var(--c) 40%, transparent); }
+      .pc .pn { font-size:12px; letter-spacing:3px; font-weight:800; color:var(--c); }
+      .pc .pd { font-size:10px; letter-spacing:1px; opacity:.7; margin-top:2px; white-space:nowrap; }
+      .pc .pv { font-size:18px; font-weight:800; margin:2px 0 4px; white-space:nowrap; }
+      .pc .r { font-size:12px; padding:2px 0; gap:4px; }
+      .strip { display:flex; align-items:flex-end; gap:2px; height:56px; margin-top:12px; }
+      .strip i { flex:1; border-radius:3px 3px 1px 1px; background:var(--c); box-shadow:0 0 6px color-mix(in srgb, var(--c) 60%, transparent); opacity:.85; }
+      .strip i.now { opacity:1; outline:1px solid #fff; }
+      .sl { display:flex; justify-content:space-between; font-size:10px; opacity:.5; margin-top:4px; }
+      .pl { padding:4px 0; }
+      .pl .r { padding:0; font-size:13px; }
+      .stack { display:flex; height:14px; border-radius:7px; overflow:hidden; margin-top:12px; background:rgba(255,255,255,.08); }
+      .stack i { display:block; height:100%; background:var(--c); box-shadow:0 0 10px var(--c); }
+
+
+      /* Calm typography and predictable alignment. */
+      .big { font-size:clamp(30px,5vw,42px); line-height:1.15; font-variant-numeric:tabular-nums; }
+      .mid { font-size:28px; font-variant-numeric:tabular-nums; }
+      .k { letter-spacing:1.6px; opacity:.78; }
+      .r { align-items:flex-start; gap:14px; padding:7px 0; line-height:1.45; }
+      .r > span { opacity:.85; min-width:0; }
+      .r b { flex-shrink:0; font-variant-numeric:tabular-nums; }
+      .sub { opacity:.86; line-height:1.45; }
+      .note { opacity:.72; font-size:12px; line-height:1.6; }
+      .chips { gap:8px; }
+      .chip { padding:9px 7px; min-width:75px; }
+      .chip span { opacity:.8; letter-spacing:.5px; }
+      .chip b { font-variant-numeric:tabular-nums; }
+      .led.on, .led.bad, .bat, .bar > div { animation:none; }
+      .led.on, .led.bad { box-shadow:none; }
+      .packs { gap:16px; }
+      table.t { font-variant-numeric:tabular-nums; }
+      table.t th { opacity:.82; }
+      .diag-scroll { overflow-x:auto; max-width:100%; -webkit-overflow-scrolling:touch; }
+      .diag-scroll table { min-width:700px; }
+      .load-grid { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:14px; }
+      .load-kpi { padding:12px;border:1px solid rgba(255,255,255,.1);border-radius:12px;background:rgba(255,255,255,.035); }
+      .load-kpi span { display:block;font-size:12px;opacity:.8;margin-bottom:5px; }
+      .load-kpi b { display:block;font-size:25px;font-variant-numeric:tabular-nums;color:var(--c,#e8ecff); }
+      @media (max-width:440px) {
+       .r { font-size:13px;gap:8px; }
+       .r > span { max-width:65%; }
+       .chip b { font-size:13px; }
+       .fn { width:82px; }
+       .fn .fv { font-size:14px; }
+       .fn .fl { letter-spacing:1px; }
+       .packs { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%;gap:20px 10px; }
+       .load-kpi b { font-size:22px; }
+      }
+      @media (prefers-reduced-motion:reduce) { *, *::before, *::after { animation:none !important; } }
+  neon_hero:
+    template: neon
+    show_icon: false
+    show_name: false
+    styles:
+      grid:
+      - grid-template-areas: '"body"'
+      - grid-template-columns: 1fr
+      - grid-template-rows: min-content
+  neon_pack_cells:
+    custom_fields:
+      body: |-
+        [[[
+        const pre = variables.pack_prefix;
+        const n = id => { const v = parseFloat(states[id]?.state); return Number.isFinite(v) ? v : null; };
+        const cnt = n(pre + 'cell_count') ?? 16;
+        const cells = Array.from({length: cnt}, (_, i) => n(pre + 'cell_' + String(i + 1).padStart(2, '0') + '_voltage'));
+        const ok = cells.filter(v => v !== null);
+        if (!ok.length) return '<div style="opacity:.6;padding:20px 0;">Geen celdata</div>';
+        const mn = Math.min(...ok), mx = Math.max(...ok);
+        const avg = ok.reduce((a, b) => a + b, 0) / ok.length;
+        const span = Math.max(mx - mn, 0.010);
+        const delta = n(pre + 'cell_voltage_delta') ?? (mx - mn) * 1000;
+        const packV = ok.reduce((a, b) => a + b, 0);
+        const I = n(pre + 'pack_current');
+        const lim = ((I, vmax) => (vmax !== null && vmax >= 3.45) ? 30 : 10 + Math.abs(I ?? 0))(I, mx);
+        const col = v => { const d = Math.abs(v - avg) * 1000; return d <= lim / 2 ? '#39ff88' : d <= lim * 1.25 ? '#ffaa00' : '#ff3d71'; };
+        const iMx = cells.indexOf(mx), iMn = cells.indexOf(mn);
+        const bars = cells.map((v, i) => {
+          if (v === null) return `<div class="c"><div class="b" style="height:8%;--k:#5c6378"></div></div>`;
+          const h = 30 + 70 * (v - mn) / span;
+          const tag = mx === mn ? '' : i === iMx ? '▲' : i === iMn ? '▼' : '';
+          return `<div class="c" title="Cel ${i + 1}: ${v.toFixed(3)} V"><div class="b ${tag ? 'x' : ''}" style="height:${h}%;--k:${col(v)}"><em>${tag}</em></div></div>`;
+        }).join('');
+        const lbls = cells.map((_, i) => `<i>${i + 1}</i>`).join('');
+        const flow = I === null || Math.abs(I) < 0.5 ? 'in rust' : `bij ${Math.abs(I).toFixed(0)} A`;
+        const phase = mx >= 3.45 ? `Top van de curve, hier telt de delta echt (grens ${lim.toFixed(0)} mV)`
+          : avg < 3.10 ? `Onderkant van de curve, grens ${lim.toFixed(0)} mV ${flow}`
+          : `LiFePO4-plateau, grens ${lim.toFixed(0)} mV ${flow}`;
+        const dCol = delta <= lim ? '#39ff88' : delta <= lim * 2.5 ? '#ffaa00' : '#ff3d71';
+        return `
+          <div class="cells">${bars}</div>
+          <div class="lb">${lbls}</div>
+          <div class="st">
+            <div><span>Pack</span><b>${packV.toFixed(2)} V</b></div>
+            <div><span>Min</span><b>${mn.toFixed(3)}</b></div>
+            <div><span>Gem</span><b>${avg.toFixed(3)}</b></div>
+            <div><span>Max</span><b>${mx.toFixed(3)}</b></div>
+            <div><span>Delta</span><b style="color:${dCol}">${delta.toFixed(0)} mV</b></div>
+          </div>
+          <div class="ph">${phase}</div>`;
+        ]]]
+  neon_pack_health:
+    custom_fields:
+      body: |-
+        [[[
+        const pre = variables.pack_prefix;
+        const pn = (pre.match(/pack_(\d+)_$/) || [])[1];
+        const find = (k, d = 'sensor') => {
+          const exact = states[d + '.' + pre.replace(/^sensor\./, '') + k];
+          if (exact) return exact;
+          const re = new RegExp('^' + d + '\\.[a-z0-9_]*pack_' + pn + '_([a-z0-9_]*_)?' + k + '(_\\d+)?$');
+          const m = Object.keys(states).filter(id => re.test(id));
+          const live = m.filter(id => !['unavailable', 'unknown'].includes(states[id].state));
+          const pick = live.length === 1 ? live : m.length === 1 ? m : [];
+          return pick.length ? states[pick[0]] : undefined;
+        };
+        const n = k => { const v = parseFloat(find(k)?.state); return Number.isFinite(v) ? v : null; };
+        const txt = k => { const v = find(k)?.state; return (v === undefined || v === 'unknown' || v === 'unavailable') ? null : v; };
+        const soh = n('state_of_health');
+        const cyc = n('cycle_count');
+        const full = n('full_charge_capacity');
+        const des = n('design_capacity');
+        const temps = [1, 2, 3, 4].map(i => n('cell_temperature_' + i));
+        const env = n('environment_temperature');
+        const rv = n('raw_voltage_status');
+        const rt = n('raw_temperature_status');
+        const prot = txt('bms_protections');
+        const warn = txt('bms_warnings');
+        const bal = find('balancer_active', 'binary_sensor')?.state;
+        const cells = txt('balancing_cells');
+        const stTxt = (lbl, v, lvl) => `<div class="s ${v === null ? '' : v === 'OK' ? 'ok' : lvl}"><span>${lbl}</span><b>${v ?? '-'}</b></div>`;
+        const fr = find('valid_frames');
+        const last = fr ? new Date(fr.last_updated) : null;
+        const live = last !== null && (Date.now() - last.getTime()) < 300000;
+        const tCol = t => t === null ? '#5c6378' : (t < 0 || t > 45) ? '#ff3d71' : (t < 5 || t > 40) ? '#ffaa00' : '#39ff88';
+        const eCol = t => t === null ? '#5c6378' : t < 45 ? '#39ff88' : t < 55 ? '#ffaa00' : '#ff3d71';
+        const sohDeg = soh === null ? 0 : Math.max(0, Math.min(100, soh)) * 3.6;
+        const capPct = (full !== null && des) ? full / des * 100 : null;
+        const chip = (lbl, t, f = tCol) => `<div class="t" style="--k:${f(t)}"><span>${lbl}</span><b>${t === null ? '-' : t.toFixed(1)}°</b></div>`;
+        const stat = (lbl, v, voltage = false) => {
+          if (v === null) return `<div class="s"><span>${lbl}</span><b>-</b></div>`;
+          const r = Math.round(v);
+          const lvl = r === 0 ? 'ok' : (voltage && (r & 0x01)) ? 'bad' : 'warn';
+          const t = r === 0 ? 'OK' : '0x' + r.toString(16).toUpperCase();
+          return `<div class="s ${lvl}"><span>${lbl}</span><b>${t}</b></div>`;
+        };
+        const balTxt = bal === 'on' ? 'actief' + (cells && cells !== 'none' ? ' (' + cells + ')' : '') : bal === 'off' ? 'uit' : '-';
+        return `
+          <div class="hl">
+            <div class="ring" style="--d:${sohDeg}deg"><div><b>${soh === null ? '-' : soh.toFixed(0)}%</b><span>SoH</span></div></div>
+            <div class="kv">
+              <div class="r"><span>Cycli</span><b>${cyc === null ? '-' : cyc.toFixed(0)}</b></div>
+              <div class="r"><span>Vol / ontwerp</span><b>${full === null ? '-' : full.toFixed(1)} / ${des === null ? '-' : des.toFixed(0)} Ah</b></div>
+              <div class="cb"><div style="width:${Math.min(capPct ?? 0, 100)}%"></div></div>
+              <div class="cp">${capPct === null ? '' : capPct.toFixed(0) + '% van ontwerpcapaciteit'}</div>
+            </div>
+          </div>
+          <div class="temps">${temps.map((t, i) => chip('T' + (i + 1), t)).join('')}${chip('Omg', env, eCol)}</div>
+          <div class="sts">
+            ${prot !== null ? stTxt('Beveiliging', prot, 'bad') : stat('Spanning', rv, true)}
+            ${warn !== null ? stTxt('Waarschuwing', warn, 'warn') : stat('Temp', rt)}
+            <div class="s ${bal === 'on' ? 'bl' : ''}"><span>Balancer</span><b>${balTxt}</b></div>
+            <div class="s lv ${live ? 'on' : ''}"><span>Laatste frame</span><b><i></i>${last ? last.toLocaleTimeString('nl-NL') : '-'}</b></div>
+          </div>`;
+        ]]]
+views:
+- type: sections
+  max_columns: 2
+  title: Packs
+  path: accu-packs
+  icon: mdi:home-battery
+  sections:
+  - type: grid
+    column_span: 2
+    cards:
+    - type: heading
+      heading: Thuisaccu
+      icon: mdi:home-battery
+    - type: custom:button-card
+      template: neon_hero
+      variables:
+        accent: '#00E5FF'
+      grid_options:
+        columns: full
+      triggers_update:
+      - sensor.inverter_battery_power
+      - sensor.inverter_battery
+      - sensor.docan_pack_1_state_of_charge
+      - sensor.docan_pack_1_remaining_capacity
+      - sensor.docan_pack_1_full_charge_capacity
+      - sensor.docan_pack_2_state_of_charge
+      - sensor.docan_pack_2_remaining_capacity
+      - sensor.docan_pack_2_full_charge_capacity
+      - sensor.docan_pack_3_state_of_charge
+      - sensor.docan_pack_3_remaining_capacity
+      - sensor.docan_pack_3_full_charge_capacity
+      - sensor.docan_pack_4_state_of_charge
+      - sensor.docan_pack_4_remaining_capacity
+      - sensor.docan_pack_4_full_charge_capacity
+      custom_fields:
+        body: |-
+          [[[
+          const PACKS = [1, 2, 3, 4];
+          const COL = {1: '#00E5FF', 2: '#FF4FD8', 3: '#4DA3FF', 4: '#A78BFA'};
+          const V_NOM = 51.2;
+          const ROLE = {1: 'MASTER', 2: 'SLAVE', 3: 'SLAVE', 4: 'SLAVE'};
+          const n = id => { const v = parseFloat(states[id]?.state); return Number.isFinite(v) ? v : null; };
+          const PREFIX = {
+            1: 'sensor.docan_pack_1_',
+            2: 'sensor.docan_pack_2_',
+            3: 'sensor.docan_pack_3_',
+            4: 'sensor.docan_pack_4_'
+          };
+          const s = (p, k) => n(PREFIX[p] + k);
+          const socCol = v => v === null ? '#5c6378' : v < 10 ? '#ff3d71' : v < 20 ? '#ffaa00' : '#39ff88';
+          let tot = 0, totMax = 0, validE = 0, validMax = 0;
+          const socs = [];
+          const bp0 = (() => { const id = 'sensor.inverter_battery_power'; const value = n(id); return value === null ? null : states[id]?.attributes?.unit_of_measurement === 'kW' ? value * 1000 : value; })();
+          const mode0 = bp0 === null ? 'onbekend' : bp0 < -50 ? 'laden' : bp0 > 50 ? 'ontladen' : 'rust';
+          const packs = PACKS.map(p => {
+            const soc = s(p, 'state_of_charge');
+            const rem = s(p, 'remaining_capacity');
+            const full = s(p, 'full_charge_capacity') ?? s(p, 'design_capacity');
+            const e = rem === null ? null : rem * V_NOM / 1000;
+            const m = full === null ? null : full * V_NOM / 1000;
+            if (e !== null) { tot += e; validE++; }
+            if (m !== null) { totMax += m; validMax++; }
+            if (soc !== null) socs.push(soc);
+            const pct = soc === null ? 0 : Math.max(0, Math.min(100, soc));
+            return `
+              <div class="pk">
+                <div class="bw" style="--c:${socCol(soc)}">
+                  <div class="bat">
+                    <div class="fill" style="height:${pct}%"></div>
+                    <div class="fx ${mode0}"></div>
+                    <div class="lbl">${soc === null ? '-' : soc.toFixed(0)}<small>%</small></div>
+                  </div>
+                </div>
+                <div class="pn" style="color:${COL[p]}">PACK ${p}</div>
+                <div class="rl">${ROLE[p] ?? ''}</div>
+                <div class="pe">${e === null ? '-' : e.toFixed(1)}<span> / ${m === null ? '-' : m.toFixed(1)} kWh</span></div>
+              </div>`;
+          }).join('');
+          const complete = validE === 4 && validMax === 4; const totPct = complete && totMax > 0 ? tot / totMax * 100 : null;
+          const bp = (() => { const id = 'sensor.inverter_battery_power'; const value = n(id); return value === null ? null : states[id]?.attributes?.unit_of_measurement === 'kW' ? value * 1000 : value; })();
+          const deyeSoc = n('sensor.inverter_battery');
+          const mode = bp === null ? 'onbekend' : bp < -50 ? 'laden' : bp > 50 ? 'ontladen' : 'rust';
+          const kw = bp === null ? 0 : Math.abs(bp) / 1000;
+          const hrs = !complete ? null : mode === 'laden' ? (totMax - tot) / kw : mode === 'ontladen' ? tot / kw : null;
+          const eta = (hrs === null || !Number.isFinite(hrs)) ? '' : `${Math.floor(hrs)}u ${String(Math.round((hrs % 1) * 60)).padStart(2, '0')}m`;
+          const mTxt = mode === 'laden' ? `LADEN ${kw.toFixed(1)} kW` : mode === 'ontladen' ? `ONTLADEN ${kw.toFixed(1)} kW` : mode === 'onbekend' ? 'ONBEKEND' : 'RUST';
+          const mSub = mode === 'laden' ? `vol over ~${eta}` : mode === 'ontladen' ? `leeg over ~${eta}` : mode === 'onbekend' ? 'Geen vermogensmeting beschikbaar' : 'geen noemenswaardige stroom';
+          const spread = socs.length > 1 ? Math.max(...socs) - Math.min(...socs) : null;
+          const spCol = spread === null ? 'inherit' : spread <= 5 ? '#39ff88' : spread <= 12 ? '#ffaa00' : '#ff3d71';
+          return `
+            <div class="hero">
+              <div class="tot">
+                <div class="k">THUISACCU · OPGESLAGEN</div>
+                <div class="big">${validE === 4 ? tot.toFixed(1) : '-'}<small> kWh</small></div>
+                <div class="sub">van ${validMax === 4 ? totMax.toFixed(1) : '-'} kWh BMS-schatting · 64 kWh nominaal · ${totPct === null ? '-' : totPct.toFixed(0)}%</div>
+                <div class="bar"><div style="width:${Math.max(0, Math.min(100, totPct ?? 0))}%"></div></div>
+                <div class="mode ${mode}"><b>${mTxt}</b><span>${mSub}</span></div>
+                <div class="sub2">SoC-verschil tussen packs <b style="color:${spCol}">${spread === null ? '-' : spread.toFixed(1) + '%'}</b> · Deye SoC <b>${deyeSoc === null ? '-' : deyeSoc.toFixed(0) + '%'}</b></div>
+              </div>
+              <div class="packs">${packs}</div>
+            </div>`;
+          ]]]
+      extra_styles: |
+        @keyframes spin { to { transform: rotate(360deg); } }
+        @keyframes glow { 0%,100% { box-shadow: 0 0 6px var(--c); } 50% { box-shadow: 0 0 22px var(--c); } }
+        @keyframes flow { to { background-position: 200% 0; } }
+        @keyframes mv { to { background-position:0 -34px; } }
+        .hero { display:flex; flex-wrap:wrap; gap:24px; align-items:center; justify-content:space-between; }
+        .tot { flex:1 1 220px; min-width:200px; }
+        .k { font-size:11px; letter-spacing:3px; opacity:.6; }
+        .big { font-size:48px; font-weight:800; line-height:1.1; background:linear-gradient(90deg,#00e5ff,#ff4fd8); -webkit-background-clip:text; background-clip:text; color:transparent; }
+        .big small { font-size:18px; }
+        .sub { opacity:.75; font-size:14px; margin-top:2px; }
+        .sub2 { opacity:.85; font-size:13px; margin-top:10px; }
+        .bar { height:8px; border-radius:6px; background:rgba(255,255,255,.08); margin-top:10px; overflow:hidden; }
+        .bar div { height:100%; border-radius:6px; background:linear-gradient(90deg,#00e5ff,#ff4fd8,#00e5ff); background-size:200% 100%; animation:flow 4s linear infinite; }
+        .packs { display:flex; gap:26px; flex-wrap:wrap; justify-content:center; }
+        .pk { display:flex; flex-direction:column; align-items:center; gap:3px; }
+        .bw { position:relative; padding-top:9px; }
+        .bw::before { content:''; position:absolute; top:0; left:50%; margin-left:-15px; width:30px; height:9px; border-radius:4px 4px 0 0; background:var(--c); }
+        .bat { position:relative; width:80px; height:140px; border:3px solid var(--c); border-radius:14px; overflow:hidden; background:#0b1022; animation:glow 3s ease-in-out infinite; }
+        .fill { position:absolute; left:0; right:0; bottom:0; background:linear-gradient(to top, color-mix(in srgb, var(--c) 30%, #0b1022), var(--c)); }
+        .fill::before, .fill::after { content:''; position:absolute; left:50%; margin-left:-110px; width:220px; height:220px; border-radius:42%; }
+        .fill::before { bottom:calc(100% - 9px); background:#0b1022; animation:spin 7s linear infinite; }
+        .fill::after { bottom:calc(100% - 13px); background:rgba(11,16,34,.45); animation:spin 11s linear infinite reverse; }
+        .fx { position:absolute; inset:0; z-index:1; pointer-events:none; }
+        .fx.laden, .fx.ontladen { background:repeating-linear-gradient(0deg, transparent 0 14px, rgba(255,255,255,.14) 14px 17px); animation:mv 1.1s linear infinite; }
+        .fx.ontladen { animation-direction:reverse; }
+        .mode { display:flex; flex-direction:column; margin-top:12px; padding:8px 12px; border-radius:12px; background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.08); }
+        .mode b { font-size:15px; letter-spacing:2px; }
+        .mode span { font-size:12px; opacity:.6; }
+        .mode.laden { border-color:rgba(0,229,255,.5); box-shadow:0 0 14px rgba(0,229,255,.25); }
+        .mode.laden b { color:#00e5ff; }
+        .mode.ontladen { border-color:rgba(77,163,255,.5); box-shadow:0 0 14px rgba(77,163,255,.25); }
+        .mode.ontladen b { color:#4da3ff; }
+        .lbl { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:28px; font-weight:800; color:#fff; text-shadow:0 0 6px #000,0 0 2px #000; z-index:2; }
+        .lbl small { font-size:14px; margin-left:1px; }
+        .pn { font-size:11px; letter-spacing:3px; font-weight:700; margin-top:6px; }
+        .rl { font-size:9px; letter-spacing:2px; opacity:.5; margin-top:-2px; }
+        .pe { font-size:15px; font-weight:700; }
+        .pe span { font-weight:400; opacity:.6; font-size:12px; }
+
+
+        /* Calm typography and predictable alignment. */
+        .big { font-size:clamp(30px,5vw,42px); line-height:1.15; font-variant-numeric:tabular-nums; }
+        .mid { font-size:28px; font-variant-numeric:tabular-nums; }
+        .k { letter-spacing:1.6px; opacity:.78; }
+        .r { align-items:flex-start; gap:14px; padding:7px 0; line-height:1.45; }
+        .r > span { opacity:.85; min-width:0; }
+        .r b { flex-shrink:0; font-variant-numeric:tabular-nums; }
+        .sub { opacity:.86; line-height:1.45; }
+        .note { opacity:.72; font-size:12px; line-height:1.6; }
+        .chips { gap:8px; }
+        .chip { padding:9px 7px; min-width:75px; }
+        .chip span { opacity:.8; letter-spacing:.5px; }
+        .chip b { font-variant-numeric:tabular-nums; }
+        .led.on, .led.bad, .bat, .bar > div { animation:none; }
+        .led.on, .led.bad { box-shadow:none; }
+        .packs { gap:16px; }
+        table.t { font-variant-numeric:tabular-nums; }
+        table.t th { opacity:.82; }
+        .diag-scroll { overflow-x:auto; max-width:100%; -webkit-overflow-scrolling:touch; }
+        .diag-scroll table { min-width:700px; }
+        .load-grid { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:14px; }
+        .load-kpi { padding:12px;border:1px solid rgba(255,255,255,.1);border-radius:12px;background:rgba(255,255,255,.035); }
+        .load-kpi span { display:block;font-size:12px;opacity:.8;margin-bottom:5px; }
+        .load-kpi b { display:block;font-size:25px;font-variant-numeric:tabular-nums;color:var(--c,#e8ecff); }
+        @media (max-width:440px) {
+         .r { font-size:13px;gap:8px; }
+         .r > span { max-width:65%; }
+         .chip b { font-size:13px; }
+         .fn { width:82px; }
+         .fn .fv { font-size:14px; }
+         .fn .fl { letter-spacing:1px; }
+         .packs { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%;gap:20px 10px; }
+         .load-kpi b { font-size:22px; }
+        }
+        @media (prefers-reduced-motion:reduce) { *, *::before, *::after { animation:none !important; } }
+  - type: grid
+    column_span: 2
+    cards:
+    - type: heading
+      heading: Diagnostiek
+      icon: mdi:chip
+    - type: custom:button-card
+      template: neon
+      name: Identiteit & BMS-status
+      icon: mdi:barcode-scan
+      variables:
+        accent: '#00E5FF'
+      grid_options:
+        columns: full
+      triggers_update:
+      - binary_sensor.docan_pack_1_bms_communication
+      - binary_sensor.docan_pack_1_balancer_active
+      - sensor.docan_pack_1_serial_number
+      - sensor.docan_pack_1_bms_model
+      - sensor.docan_pack_1_bms_firmware
+      - sensor.docan_pack_1_bms_hardware
+      - sensor.docan_pack_1_production_date
+      - sensor.docan_pack_1_detected_bms_address
+      - sensor.docan_pack_1_detected_pack_number
+      - sensor.docan_pack_1_valid_frames
+      - sensor.docan_pack_1_invalid_frames
+      - sensor.docan_pack_1_raw_fet_status
+      - sensor.docan_pack_1_state_of_charge
+      - sensor.docan_pack_1_cell_voltage_delta
+      - sensor.docan_pack_1_pack_current
+      - sensor.docan_pack_1_highest_cell_voltage
+      - sensor.docan_pack_1_bms_protections
+      - sensor.docan_pack_1_bms_warnings
+      - sensor.docan_pack_1_balancing_cells
+      - sensor.docan_pack_1_bms_balancer_start_voltage
+      - sensor.docan_pack_1_bms_balancer_start_difference
+      - sensor.docan_pack_1_bms_cell_overvoltage_alarm
+      - sensor.docan_pack_1_bms_cell_overvoltage_protection
+      - sensor.docan_pack_1_bms_charge_voltage
+      - sensor.docan_pack_1_bms_charge_current_limit
+      - binary_sensor.docan_pack_2_bms_communication
+      - binary_sensor.docan_pack_2_balancer_active
+      - sensor.docan_pack_2_serial_number
+      - sensor.docan_pack_2_bms_model
+      - sensor.docan_pack_2_bms_firmware
+      - sensor.docan_pack_2_bms_hardware
+      - sensor.docan_pack_2_production_date
+      - sensor.docan_pack_2_detected_bms_address
+      - sensor.docan_pack_2_detected_pack_number
+      - sensor.docan_pack_2_valid_frames
+      - sensor.docan_pack_2_invalid_frames
+      - sensor.docan_pack_2_raw_fet_status
+      - sensor.docan_pack_2_state_of_charge
+      - sensor.docan_pack_2_cell_voltage_delta
+      - sensor.docan_pack_2_pack_current
+      - sensor.docan_pack_2_highest_cell_voltage
+      - sensor.docan_pack_2_bms_protections
+      - sensor.docan_pack_2_bms_warnings
+      - sensor.docan_pack_2_balancing_cells
+      - sensor.docan_pack_2_bms_balancer_start_voltage
+      - sensor.docan_pack_2_bms_balancer_start_difference
+      - sensor.docan_pack_2_bms_cell_overvoltage_alarm
+      - sensor.docan_pack_2_bms_cell_overvoltage_protection
+      - sensor.docan_pack_2_bms_charge_voltage
+      - sensor.docan_pack_2_bms_charge_current_limit
+      - binary_sensor.docan_pack_3_bms_communication
+      - binary_sensor.docan_pack_3_balancer_active
+      - sensor.docan_pack_3_serial_number
+      - sensor.docan_pack_3_bms_model
+      - sensor.docan_pack_3_bms_firmware
+      - sensor.docan_pack_3_bms_hardware
+      - sensor.docan_pack_3_production_date
+      - sensor.docan_pack_3_detected_bms_address
+      - sensor.docan_pack_3_detected_pack_number
+      - sensor.docan_pack_3_valid_frames
+      - sensor.docan_pack_3_invalid_frames
+      - sensor.docan_pack_3_raw_fet_status
+      - sensor.docan_pack_3_state_of_charge
+      - sensor.docan_pack_3_cell_voltage_delta
+      - sensor.docan_pack_3_pack_current
+      - sensor.docan_pack_3_highest_cell_voltage
+      - sensor.docan_pack_3_bms_protections
+      - sensor.docan_pack_3_bms_warnings
+      - sensor.docan_pack_3_balancing_cells
+      - sensor.docan_pack_3_bms_balancer_start_voltage
+      - sensor.docan_pack_3_bms_balancer_start_difference
+      - sensor.docan_pack_3_bms_cell_overvoltage_alarm
+      - sensor.docan_pack_3_bms_cell_overvoltage_protection
+      - sensor.docan_pack_3_bms_charge_voltage
+      - sensor.docan_pack_3_bms_charge_current_limit
+      - binary_sensor.docan_pack_4_bms_communication
+      - binary_sensor.docan_pack_4_balancer_active
+      - sensor.docan_pack_4_serial_number
+      - sensor.docan_pack_4_bms_model
+      - sensor.docan_pack_4_bms_firmware
+      - sensor.docan_pack_4_bms_hardware
+      - sensor.docan_pack_4_production_date
+      - sensor.docan_pack_4_detected_bms_address
+      - sensor.docan_pack_4_detected_pack_number
+      - sensor.docan_pack_4_valid_frames
+      - sensor.docan_pack_4_invalid_frames
+      - sensor.docan_pack_4_raw_fet_status
+      - sensor.docan_pack_4_state_of_charge
+      - sensor.docan_pack_4_cell_voltage_delta
+      - sensor.docan_pack_4_pack_current
+      - sensor.docan_pack_4_highest_cell_voltage
+      - sensor.docan_pack_4_bms_protections
+      - sensor.docan_pack_4_bms_warnings
+      - sensor.docan_pack_4_balancing_cells
+      - sensor.docan_pack_4_bms_balancer_start_voltage
+      - sensor.docan_pack_4_bms_balancer_start_difference
+      - sensor.docan_pack_4_bms_cell_overvoltage_alarm
+      - sensor.docan_pack_4_bms_cell_overvoltage_protection
+      - sensor.docan_pack_4_bms_charge_voltage
+      - sensor.docan_pack_4_bms_charge_current_limit
+      custom_fields:
+        body: |-
+          [[[
+          const P = [
+            { n: 1, pre: 'docan_pack_1_', c: '#00E5FF', role: 'MASTER' },
+            { n: 2, pre: 'docan_pack_2_', c: '#FF4FD8', role: 'SLAVE' },
+            { n: 3, pre: 'docan_pack_3_', c: '#4DA3FF', role: 'SLAVE' },
+            { n: 4, pre: 'docan_pack_4_', c: '#A78BFA', role: 'SLAVE' }
+          ];
+          const bad = ['unknown', 'unavailable', '', undefined];
+          const ids = Object.keys(states);
+          const e = (p, k, d = 'sensor') => {
+            const exact = states[`${d}.${p.pre}${k}`];
+            if (exact) return exact;
+            const pattern = new RegExp(`^${d}\\.[a-z0-9_]*pack_${p.n}_([a-z0-9_]*_)?${k}(_\\d+)?$`);
+            const matches = Object.keys(states).filter(id => pattern.test(id));
+            return matches.length === 1 ? states[matches[0]] : undefined;
+          };
+          const t = (p, k) => { const s = e(p, k)?.state; return bad.includes(s) ? null : s; };
+          const n = (p, k) => { const v = parseFloat(e(p, k)?.state); return Number.isFinite(v) ? v : null; };
+          const dash = '<span style="opacity:.4">-</span>';
+          const hx = v => '0x' + Math.round(v).toString(16).toUpperCase().padStart(2, '0');
+          const tag = (txt, c) => `<b style="color:${c}">${txt}</b>`;
+          const hex = v => v === null ? dash : v === 0 ? tag('OK', '#39ff88') : tag(hx(v), '#ffaa00');
+          const vst = v => v === null ? dash : v === 0 ? tag('OK', '#39ff88')
+            : (Math.round(v) & 0x01) ? tag(hx(v) + ' laadstop', '#ff3d71') : tag(hx(v) + ' hoog', '#ffaa00');
+
+          const FET_OK = [0x1023, 0x23];
+          const fet = v => v === null ? dash : FET_OK.includes(Math.round(v)) ? tag(hx(v), '#39ff88') : tag(hx(v), '#ffaa00');
+          const socCol = v => v < 10 ? '#ff3d71' : v < 20 ? '#ffaa00' : '#39ff88';
+          const sv = (p, k) => { const v = n(p, k); return v === null ? null : (Number.isInteger(v) ? v.toFixed(0) : v.toFixed(1)); };
+          const setKey = (p, a, b) => `${sv(p, a)}|${sv(p, b)}`;
+          const set2 = (p, a, b, u, ua = '', ub = '') => {
+            const x = sv(p, a), y = sv(p, b);
+            if (x === null && y === null) return dash;
+            const all = P.map(q => setKey(q, a, b)).filter(k => !k.includes('null'));
+            const same = new Set(all).size <= 1;
+            const txt = `${x ?? '-'}${ua} / ${y ?? '-'}${ub}${u ? ' ' + u : ''}`;
+            return same ? txt : tag(txt, '#ffaa00');
+          };
+          const rows = [
+            ['Communicatie', p => {
+              const s = e(p, 'bms_communication', 'binary_sensor')?.state;
+              const cls = s === 'on' ? 'on' : (s === 'off' ? 'bad' : '');
+              return `<span style="display:inline-flex;align-items:center;gap:6px;"><i class="led ${cls}"></i>${s === 'on' ? 'OK' : s === 'off' ? 'WEG' : '-'}</span>`;
+            }],
+            ['Serienummer', p => { const v = t(p, 'serial_number'); return v ? `<b style="font-family:monospace;letter-spacing:.5px;">${v}</b>` : dash; }],
+            ['Productiedatum', p => t(p, 'production_date') ?? dash],
+            ['Model', p => t(p, 'bms_model') ?? dash],
+            ['Firmware / HW', p => { const f = t(p, 'bms_firmware'), h = t(p, 'bms_hardware'); return f || h ? `${f ?? '-'} / ${h ?? '-'}` : dash; }],
+            ['Adres / pack', p => { const a = n(p, 'detected_bms_address'), k = n(p, 'detected_pack_number'); return a === null ? dash : `${a.toFixed(0)} / ${k === null ? '-' : k.toFixed(0)}`; }],
+            ['Frames ok / fout', p => {
+              const ok = n(p, 'valid_frames'), ko = n(p, 'invalid_frames');
+              const rate = (ok && ko !== null) ? ko / (ok + ko) : 0;
+              const fc = !ko ? '#39ff88' : rate < 0.001 ? '#39ff88' : rate < 0.01 ? '#ffaa00' : '#ff3d71';
+              return ok === null ? dash : `${ok.toFixed(0)} / <span style="color:${fc}">${ko === null ? '-' : ko.toFixed(0)}</span>`;
+            }],
+            ['Beveiligingen', p => { const v = t(p, 'bms_protections'); return v === null ? dash : v === 'OK' ? tag('OK', '#39ff88') : tag(v, '#ff3d71'); }],
+            ['Waarschuwingen', p => { const v = t(p, 'bms_warnings'); return v === null ? dash : v === 'OK' ? tag('OK', '#39ff88') : tag(v, '#ffaa00'); }],
+            ['Balancer', p => { const a = e(p, 'balancer_active', 'binary_sensor')?.state; const c = t(p, 'balancing_cells'); return a === 'on' ? tag('actief' + (c && c !== 'none' ? ' (cel ' + c + ')' : ''), '#00E5FF') : a === 'off' ? '<span style="opacity:.6">uit</span>' : dash; }],
+            ['FET-status', p => fet(n(p, 'raw_fet_status'))],
+            ['Laatste frame', p => {
+              const s = e(p, 'valid_frames');
+              if (!s) return dash;
+              const d = new Date(s.last_updated);
+              const age = (Date.now() - d.getTime()) / 1000;
+              const c = age < 60 ? '#39ff88' : age < 300 ? '#ffaa00' : '#ff3d71';
+              return `<span style="color:${c}">${d.toLocaleTimeString('nl-NL')}</span>`;
+            }],
+            ['Stroom', p => {
+              const I = n(p, 'pack_current');
+              if (I === null) return dash;
+              const all = P.map(q => n(q, 'pack_current')).filter(v => v !== null);
+              const avg = all.length ? all.reduce((x, y) => x + y, 0) / all.length : I;
+              const dev = Math.abs(avg) > 5 ? Math.abs(I - avg) / Math.abs(avg) : 0;
+              const c = dev <= 0.2 ? '#39ff88' : dev <= 0.4 ? '#ffaa00' : '#ff3d71';
+              const dir = I > 0.5 ? 'laden' : I < -0.5 ? 'ontladen' : 'rust';
+              return `<b style="color:${c};font-size:15px;">${I.toFixed(1)} A</b> <span style="opacity:.55;font-size:11px;">${dir}</span>`;
+            }, true],
+            ['Lading', p => {
+              const v = n(p, 'state_of_charge');
+              if (v === null) return dash;
+              const c = socCol(v);
+              const w = Math.max(0, Math.min(100, v));
+              return `<span style="display:inline-flex;align-items:center;gap:8px;"><span style="display:inline-block;width:46px;height:6px;border-radius:3px;background:rgba(255,255,255,.08);overflow:hidden;"><span style="display:block;height:100%;width:${w}%;background:${c};box-shadow:0 0 6px ${c};"></span></span><b style="color:${c};font-size:15px;">${v.toFixed(1)}%</b></span>`;
+            }],
+            ['Celdelta', p => {
+              const d = n(p, 'cell_voltage_delta');
+              if (d === null) return dash;
+              const lim = ((I, vmax) => (vmax !== null && vmax >= 3.45) ? 30 : 10 + Math.abs(I ?? 0))(n(p, 'pack_current'), n(p, 'highest_cell_voltage'));
+              const c = d <= lim ? '#39ff88' : d <= lim * 2.5 ? '#ffaa00' : '#ff3d71';
+              return `<b style="color:${c};font-size:15px;">${d.toFixed(0)} mV</b>`;
+            }],
+            ['Balancer start', p => set2(p, 'bms_balancer_start_voltage', 'bms_balancer_start_difference', 'mV'), true],
+            ['Cel hoog alarm / beveil.', p => set2(p, 'bms_cell_overvoltage_alarm', 'bms_cell_overvoltage_protection', 'mV')],
+            ['Laadspanning / -stroom', p => set2(p, 'bms_charge_voltage', 'bms_charge_current_limit', '', ' V', ' A')]
+          ];
+          const head = `<tr><th></th>${P.map(p => `<th style="color:${p.c};opacity:1;font-weight:700;letter-spacing:2px;">PACK ${p.n}<br><span style="font-size:9px;opacity:.6;font-weight:400;">${p.role}</span></th>`).join('')}</tr>`;
+          const body = rows.map(([l, f, sep]) => {
+            const st = sep ? ' style="border-top:1px solid rgba(255,255,255,.22);padding-top:10px;"' : '';
+            return `<tr><td${st}>${l}</td>${P.map(p => `<td${st}>${f(p)}</td>`).join('')}</tr>`;
+          }).join('');
+          const serials = P.map(p => t(p, 'serial_number')).filter(Boolean);
+          const dupes = serials.length !== new Set(serials).size;
+          return `
+            <div style="overflow-x:auto;">
+              <div class="diag-scroll"><table class="t" style="font-size:13px;white-space:nowrap;">${head}${body}</table></div>
+            </div>
+            ${dupes ? '<div class="mode on" style="--c:#ff3d71"><b>DUBBEL SERIENUMMER</b><span>Twee sticks lezen hetzelfde pack uit, controleer de bekabeling</span></div>' : ''}
+            <div class="note">Beveiligingen (rood) en waarschuwingen (oranje) zijn de statusbits van de BMS, vertaald met de betekenis uit de DR BMS Monitor-software. Balancer actief = de BMS meldt dat hij balanceert, met de cel die hij bijwerkt. BMS-instellingen worden elk uur uit de BMS gelezen, oranje = de packs hebben verschillende waarden. De productiedatum valt steeds enkele dagen na de datum in het serienummer. Groen = in orde, oranje = waarschuwing, rood = probleem. Stroom: groen als een pack binnen 20% van het gemiddelde van de vier zit, oranje tot 40%, daarboven rood (wijst op een slechter contact of afwijkend pack). Celdelta: de grens is 10 mV + 1 mV per ampère laad- of ontlaadstroom (stroom geeft altijd wat spreiding), en 30 mV zodra de hoogste cel boven 3,45 V komt. Oranje tot 2,5× de grens, daarboven rood. FET 0x1023 en 0x23 zijn normaal.</div>`;
+          ]]]
+  - type: grid
+    cards:
+    - type: heading
+      heading: Pack 1 (master, ID 0)
+      icon: mdi:battery-high
+    - type: custom:button-card
+      template:
+      - neon
+      - neon_pack_cells
+      name: 16 cellen
+      icon: mdi:view-column
+      variables:
+        accent: '#00E5FF'
+        pack_prefix: sensor.docan_pack_1_
+      grid_options:
+        columns: full
+      triggers_update:
+      - sensor.docan_pack_1_state_of_charge
+      - sensor.docan_pack_1_cell_01_voltage
+      - sensor.docan_pack_1_cell_02_voltage
+      - sensor.docan_pack_1_cell_03_voltage
+      - sensor.docan_pack_1_cell_04_voltage
+      - sensor.docan_pack_1_cell_05_voltage
+      - sensor.docan_pack_1_cell_06_voltage
+      - sensor.docan_pack_1_cell_07_voltage
+      - sensor.docan_pack_1_cell_08_voltage
+      - sensor.docan_pack_1_cell_09_voltage
+      - sensor.docan_pack_1_cell_10_voltage
+      - sensor.docan_pack_1_cell_11_voltage
+      - sensor.docan_pack_1_cell_12_voltage
+      - sensor.docan_pack_1_cell_13_voltage
+      - sensor.docan_pack_1_cell_14_voltage
+      - sensor.docan_pack_1_cell_15_voltage
+      - sensor.docan_pack_1_cell_16_voltage
+      - sensor.docan_pack_1_cell_voltage_delta
+      - sensor.docan_pack_1_pack_current
+      - sensor.docan_pack_1_highest_cell_voltage
+      extra_styles: |
+        @keyframes pulse { 0%,100% { filter:brightness(1); } 50% { filter:brightness(1.6); } }
+        .cells { display:flex; gap:4px; height:120px; align-items:stretch; box-sizing:border-box; margin-top:14px; padding-top:14px; }
+        .c { flex:1; position:relative; }
+        .c .b { position:absolute; left:0; right:0; bottom:0; }
+        .b { position:relative; width:100%; border-radius:5px 5px 2px 2px; background:linear-gradient(to top, color-mix(in srgb, var(--k) 20%, transparent), var(--k)); box-shadow:0 0 8px color-mix(in srgb, var(--k) 55%, transparent); }
+        .b.x { animation:pulse 2s ease-in-out infinite; }
+        .b em { position:absolute; top:-15px; left:0; right:0; text-align:center; font-style:normal; font-size:10px; color:var(--k); }
+        .lb { display:flex; gap:4px; margin-top:4px; }
+        .lb i { flex:1; text-align:center; font-style:normal; font-size:10px; opacity:.5; }
+        .st { display:flex; justify-content:space-between; gap:6px; margin-top:14px; padding-top:10px; border-top:1px solid rgba(255,255,255,.08); }
+        .st div { display:flex; flex-direction:column; align-items:center; }
+        .st span { font-size:10px; letter-spacing:1px; opacity:.55; text-transform:uppercase; }
+        .st b { font-size:14px; }
+        .ph { font-size:12px; opacity:.55; margin-top:10px; white-space:normal; }
+
+
+        /* Calm typography and predictable alignment. */
+        .big { font-size:clamp(30px,5vw,42px); line-height:1.15; font-variant-numeric:tabular-nums; }
+        .mid { font-size:28px; font-variant-numeric:tabular-nums; }
+        .k { letter-spacing:1.6px; opacity:.78; }
+        .r { align-items:flex-start; gap:14px; padding:7px 0; line-height:1.45; }
+        .r > span { opacity:.85; min-width:0; }
+        .r b { flex-shrink:0; font-variant-numeric:tabular-nums; }
+        .sub { opacity:.86; line-height:1.45; }
+        .note { opacity:.72; font-size:12px; line-height:1.6; }
+        .chips { gap:8px; }
+        .chip { padding:9px 7px; min-width:75px; }
+        .chip span { opacity:.8; letter-spacing:.5px; }
+        .chip b { font-variant-numeric:tabular-nums; }
+        .led.on, .led.bad, .bat, .bar > div { animation:none; }
+        .led.on, .led.bad { box-shadow:none; }
+        .packs { gap:16px; }
+        table.t { font-variant-numeric:tabular-nums; }
+        table.t th { opacity:.82; }
+        .diag-scroll { overflow-x:auto; max-width:100%; -webkit-overflow-scrolling:touch; }
+        .diag-scroll table { min-width:700px; }
+        .load-grid { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:14px; }
+        .load-kpi { padding:12px;border:1px solid rgba(255,255,255,.1);border-radius:12px;background:rgba(255,255,255,.035); }
+        .load-kpi span { display:block;font-size:12px;opacity:.8;margin-bottom:5px; }
+        .load-kpi b { display:block;font-size:25px;font-variant-numeric:tabular-nums;color:var(--c,#e8ecff); }
+        @media (max-width:440px) {
+         .r { font-size:13px;gap:8px; }
+         .r > span { max-width:65%; }
+         .chip b { font-size:13px; }
+         .fn { width:82px; }
+         .fn .fv { font-size:14px; }
+         .fn .fl { letter-spacing:1px; }
+         .packs { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%;gap:20px 10px; }
+         .load-kpi b { font-size:22px; }
+        }
+        @media (prefers-reduced-motion:reduce) { *, *::before, *::after { animation:none !important; } }
+    - type: custom:button-card
+      template:
+      - neon
+      - neon_pack_health
+      name: Gezondheid
+      icon: mdi:battery-heart-variant
+      variables:
+        accent: '#00E5FF'
+        pack_prefix: sensor.docan_pack_1_
+      grid_options:
+        columns: full
+      triggers_update:
+      - sensor.docan_pack_1_state_of_charge
+      - sensor.docan_pack_1_state_of_health
+      - sensor.docan_pack_1_cycle_count
+      - sensor.docan_pack_1_full_charge_capacity
+      - sensor.docan_pack_1_design_capacity
+      - sensor.docan_pack_1_cell_temperature_1
+      - sensor.docan_pack_1_cell_temperature_2
+      - sensor.docan_pack_1_cell_temperature_3
+      - sensor.docan_pack_1_cell_temperature_4
+      - sensor.docan_pack_1_environment_temperature
+      - sensor.docan_pack_1_raw_voltage_status
+      - sensor.docan_pack_1_raw_temperature_status
+      - sensor.docan_pack_1_bms_protections
+      - sensor.docan_pack_1_bms_warnings
+      - binary_sensor.docan_pack_1_balancer_active
+      - sensor.docan_pack_1_valid_frames
+      extra_styles: |
+        @keyframes blink { 0%,100% { opacity:1; } 50% { opacity:.25; } }
+        .hl { display:flex; gap:18px; align-items:center; margin-top:12px; }
+        .ring { width:92px; height:92px; flex:0 0 92px; border-radius:50%; background:conic-gradient(#00E5FF var(--d), rgba(255,255,255,.08) 0); display:flex; align-items:center; justify-content:center; box-shadow:0 0 16px color-mix(in srgb, #00E5FF 40%, transparent); }
+        .ring > div { width:74px; height:74px; border-radius:50%; background:#0b1022; display:flex; flex-direction:column; align-items:center; justify-content:center; }
+        .ring b { font-size:20px; }
+        .ring span { font-size:10px; letter-spacing:2px; opacity:.55; }
+        .kv { flex:1; }
+        .r { display:flex; justify-content:space-between; padding:3px 0; font-size:14px; }
+        .r span { opacity:.65; }
+        .cb { height:6px; border-radius:4px; background:rgba(255,255,255,.08); margin-top:8px; overflow:hidden; }
+        .cb div { height:100%; background:#00E5FF; box-shadow:0 0 8px #00E5FF; }
+        .cp { font-size:11px; opacity:.55; margin-top:4px; }
+        .temps { display:flex; gap:6px; margin-top:14px; }
+        .t { flex:1; border-radius:10px; padding:6px 0; text-align:center; background:color-mix(in srgb, var(--k) 12%, transparent); border:1px solid color-mix(in srgb, var(--k) 45%, transparent); }
+        .t span { display:block; font-size:10px; opacity:.6; }
+        .t b { font-size:14px; color:var(--k); }
+        .sts { display:flex; gap:6px; margin-top:8px; }
+        .s { flex:1; border-radius:10px; padding:6px 8px; background:rgba(255,255,255,.04); }
+        .s span { display:block; font-size:10px; opacity:.55; }
+        .s b { font-size:13px; }
+        .s.ok b { color:#39ff88; }
+        .s.bad b { color:#ff3d71; }
+        .s.warn b { color:#ffaa00; }
+        .s.warn { background:rgba(255,170,0,.10); }
+        .s.bl b { color:#00E5FF; }
+        .s.bl { background:rgba(0,229,255,.10); }
+        .s.bad { background:rgba(255,61,113,.12); animation:blink 1.2s infinite; }
+        .lv { flex:1.4; }
+        .lv i { display:inline-block; width:8px; height:8px; border-radius:50%; background:#5c6378; margin-right:6px; }
+        .lv.on i { background:#39ff88; box-shadow:0 0 8px #39ff88; animation:blink 1.6s infinite; }
+
+
+        /* Calm typography and predictable alignment. */
+        .big { font-size:clamp(30px,5vw,42px); line-height:1.15; font-variant-numeric:tabular-nums; }
+        .mid { font-size:28px; font-variant-numeric:tabular-nums; }
+        .k { letter-spacing:1.6px; opacity:.78; }
+        .r { align-items:flex-start; gap:14px; padding:7px 0; line-height:1.45; }
+        .r > span { opacity:.85; min-width:0; }
+        .r b { flex-shrink:0; font-variant-numeric:tabular-nums; }
+        .sub { opacity:.86; line-height:1.45; }
+        .note { opacity:.72; font-size:12px; line-height:1.6; }
+        .chips { gap:8px; }
+        .chip { padding:9px 7px; min-width:75px; }
+        .chip span { opacity:.8; letter-spacing:.5px; }
+        .chip b { font-variant-numeric:tabular-nums; }
+        .led.on, .led.bad, .bat, .bar > div { animation:none; }
+        .led.on, .led.bad { box-shadow:none; }
+        .packs { gap:16px; }
+        table.t { font-variant-numeric:tabular-nums; }
+        table.t th { opacity:.82; }
+        .diag-scroll { overflow-x:auto; max-width:100%; -webkit-overflow-scrolling:touch; }
+        .diag-scroll table { min-width:700px; }
+        .load-grid { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:14px; }
+        .load-kpi { padding:12px;border:1px solid rgba(255,255,255,.1);border-radius:12px;background:rgba(255,255,255,.035); }
+        .load-kpi span { display:block;font-size:12px;opacity:.8;margin-bottom:5px; }
+        .load-kpi b { display:block;font-size:25px;font-variant-numeric:tabular-nums;color:var(--c,#e8ecff); }
+        @media (max-width:440px) {
+         .r { font-size:13px;gap:8px; }
+         .r > span { max-width:65%; }
+         .chip b { font-size:13px; }
+         .fn { width:82px; }
+         .fn .fv { font-size:14px; }
+         .fn .fl { letter-spacing:1px; }
+         .packs { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%;gap:20px 10px; }
+         .load-kpi b { font-size:22px; }
+        }
+        @media (prefers-reduced-motion:reduce) { *, *::before, *::after { animation:none !important; } }
+  - type: grid
+    cards:
+    - type: heading
+      heading: Pack 2 (slave, ID 1)
+      icon: mdi:battery-high
+    - type: custom:button-card
+      template:
+      - neon
+      - neon_pack_cells
+      name: 16 cellen
+      icon: mdi:view-column
+      variables:
+        accent: '#FF4FD8'
+        pack_prefix: sensor.docan_pack_2_
+      grid_options:
+        columns: full
+      triggers_update:
+      - sensor.docan_pack_2_state_of_charge
+      - sensor.docan_pack_2_cell_01_voltage
+      - sensor.docan_pack_2_cell_02_voltage
+      - sensor.docan_pack_2_cell_03_voltage
+      - sensor.docan_pack_2_cell_04_voltage
+      - sensor.docan_pack_2_cell_05_voltage
+      - sensor.docan_pack_2_cell_06_voltage
+      - sensor.docan_pack_2_cell_07_voltage
+      - sensor.docan_pack_2_cell_08_voltage
+      - sensor.docan_pack_2_cell_09_voltage
+      - sensor.docan_pack_2_cell_10_voltage
+      - sensor.docan_pack_2_cell_11_voltage
+      - sensor.docan_pack_2_cell_12_voltage
+      - sensor.docan_pack_2_cell_13_voltage
+      - sensor.docan_pack_2_cell_14_voltage
+      - sensor.docan_pack_2_cell_15_voltage
+      - sensor.docan_pack_2_cell_16_voltage
+      - sensor.docan_pack_2_cell_voltage_delta
+      - sensor.docan_pack_2_pack_current
+      - sensor.docan_pack_2_highest_cell_voltage
+      extra_styles: |
+        @keyframes pulse { 0%,100% { filter:brightness(1); } 50% { filter:brightness(1.6); } }
+        .cells { display:flex; gap:4px; height:120px; align-items:stretch; box-sizing:border-box; margin-top:14px; padding-top:14px; }
+        .c { flex:1; position:relative; }
+        .c .b { position:absolute; left:0; right:0; bottom:0; }
+        .b { position:relative; width:100%; border-radius:5px 5px 2px 2px; background:linear-gradient(to top, color-mix(in srgb, var(--k) 20%, transparent), var(--k)); box-shadow:0 0 8px color-mix(in srgb, var(--k) 55%, transparent); }
+        .b.x { animation:pulse 2s ease-in-out infinite; }
+        .b em { position:absolute; top:-15px; left:0; right:0; text-align:center; font-style:normal; font-size:10px; color:var(--k); }
+        .lb { display:flex; gap:4px; margin-top:4px; }
+        .lb i { flex:1; text-align:center; font-style:normal; font-size:10px; opacity:.5; }
+        .st { display:flex; justify-content:space-between; gap:6px; margin-top:14px; padding-top:10px; border-top:1px solid rgba(255,255,255,.08); }
+        .st div { display:flex; flex-direction:column; align-items:center; }
+        .st span { font-size:10px; letter-spacing:1px; opacity:.55; text-transform:uppercase; }
+        .st b { font-size:14px; }
+        .ph { font-size:12px; opacity:.55; margin-top:10px; white-space:normal; }
+
+
+        /* Calm typography and predictable alignment. */
+        .big { font-size:clamp(30px,5vw,42px); line-height:1.15; font-variant-numeric:tabular-nums; }
+        .mid { font-size:28px; font-variant-numeric:tabular-nums; }
+        .k { letter-spacing:1.6px; opacity:.78; }
+        .r { align-items:flex-start; gap:14px; padding:7px 0; line-height:1.45; }
+        .r > span { opacity:.85; min-width:0; }
+        .r b { flex-shrink:0; font-variant-numeric:tabular-nums; }
+        .sub { opacity:.86; line-height:1.45; }
+        .note { opacity:.72; font-size:12px; line-height:1.6; }
+        .chips { gap:8px; }
+        .chip { padding:9px 7px; min-width:75px; }
+        .chip span { opacity:.8; letter-spacing:.5px; }
+        .chip b { font-variant-numeric:tabular-nums; }
+        .led.on, .led.bad, .bat, .bar > div { animation:none; }
+        .led.on, .led.bad { box-shadow:none; }
+        .packs { gap:16px; }
+        table.t { font-variant-numeric:tabular-nums; }
+        table.t th { opacity:.82; }
+        .diag-scroll { overflow-x:auto; max-width:100%; -webkit-overflow-scrolling:touch; }
+        .diag-scroll table { min-width:700px; }
+        .load-grid { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:14px; }
+        .load-kpi { padding:12px;border:1px solid rgba(255,255,255,.1);border-radius:12px;background:rgba(255,255,255,.035); }
+        .load-kpi span { display:block;font-size:12px;opacity:.8;margin-bottom:5px; }
+        .load-kpi b { display:block;font-size:25px;font-variant-numeric:tabular-nums;color:var(--c,#e8ecff); }
+        @media (max-width:440px) {
+         .r { font-size:13px;gap:8px; }
+         .r > span { max-width:65%; }
+         .chip b { font-size:13px; }
+         .fn { width:82px; }
+         .fn .fv { font-size:14px; }
+         .fn .fl { letter-spacing:1px; }
+         .packs { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%;gap:20px 10px; }
+         .load-kpi b { font-size:22px; }
+        }
+        @media (prefers-reduced-motion:reduce) { *, *::before, *::after { animation:none !important; } }
+    - type: custom:button-card
+      template:
+      - neon
+      - neon_pack_health
+      name: Gezondheid
+      icon: mdi:battery-heart-variant
+      variables:
+        accent: '#FF4FD8'
+        pack_prefix: sensor.docan_pack_2_
+      grid_options:
+        columns: full
+      triggers_update:
+      - sensor.docan_pack_2_state_of_charge
+      - sensor.docan_pack_2_state_of_health
+      - sensor.docan_pack_2_cycle_count
+      - sensor.docan_pack_2_full_charge_capacity
+      - sensor.docan_pack_2_design_capacity
+      - sensor.docan_pack_2_cell_temperature_1
+      - sensor.docan_pack_2_cell_temperature_2
+      - sensor.docan_pack_2_cell_temperature_3
+      - sensor.docan_pack_2_cell_temperature_4
+      - sensor.docan_pack_2_environment_temperature
+      - sensor.docan_pack_2_raw_voltage_status
+      - sensor.docan_pack_2_raw_temperature_status
+      - sensor.docan_pack_2_bms_protections
+      - sensor.docan_pack_2_bms_warnings
+      - binary_sensor.docan_pack_2_balancer_active
+      - sensor.docan_pack_2_valid_frames
+      extra_styles: |
+        @keyframes blink { 0%,100% { opacity:1; } 50% { opacity:.25; } }
+        .hl { display:flex; gap:18px; align-items:center; margin-top:12px; }
+        .ring { width:92px; height:92px; flex:0 0 92px; border-radius:50%; background:conic-gradient(#FF4FD8 var(--d), rgba(255,255,255,.08) 0); display:flex; align-items:center; justify-content:center; box-shadow:0 0 16px color-mix(in srgb, #FF4FD8 40%, transparent); }
+        .ring > div { width:74px; height:74px; border-radius:50%; background:#0b1022; display:flex; flex-direction:column; align-items:center; justify-content:center; }
+        .ring b { font-size:20px; }
+        .ring span { font-size:10px; letter-spacing:2px; opacity:.55; }
+        .kv { flex:1; }
+        .r { display:flex; justify-content:space-between; padding:3px 0; font-size:14px; }
+        .r span { opacity:.65; }
+        .cb { height:6px; border-radius:4px; background:rgba(255,255,255,.08); margin-top:8px; overflow:hidden; }
+        .cb div { height:100%; background:#FF4FD8; box-shadow:0 0 8px #FF4FD8; }
+        .cp { font-size:11px; opacity:.55; margin-top:4px; }
+        .temps { display:flex; gap:6px; margin-top:14px; }
+        .t { flex:1; border-radius:10px; padding:6px 0; text-align:center; background:color-mix(in srgb, var(--k) 12%, transparent); border:1px solid color-mix(in srgb, var(--k) 45%, transparent); }
+        .t span { display:block; font-size:10px; opacity:.6; }
+        .t b { font-size:14px; color:var(--k); }
+        .sts { display:flex; gap:6px; margin-top:8px; }
+        .s { flex:1; border-radius:10px; padding:6px 8px; background:rgba(255,255,255,.04); }
+        .s span { display:block; font-size:10px; opacity:.55; }
+        .s b { font-size:13px; }
+        .s.ok b { color:#39ff88; }
+        .s.bad b { color:#ff3d71; }
+        .s.warn b { color:#ffaa00; }
+        .s.warn { background:rgba(255,170,0,.10); }
+        .s.bl b { color:#00E5FF; }
+        .s.bl { background:rgba(0,229,255,.10); }
+        .s.bad { background:rgba(255,61,113,.12); animation:blink 1.2s infinite; }
+        .lv { flex:1.4; }
+        .lv i { display:inline-block; width:8px; height:8px; border-radius:50%; background:#5c6378; margin-right:6px; }
+        .lv.on i { background:#39ff88; box-shadow:0 0 8px #39ff88; animation:blink 1.6s infinite; }
+
+
+        /* Calm typography and predictable alignment. */
+        .big { font-size:clamp(30px,5vw,42px); line-height:1.15; font-variant-numeric:tabular-nums; }
+        .mid { font-size:28px; font-variant-numeric:tabular-nums; }
+        .k { letter-spacing:1.6px; opacity:.78; }
+        .r { align-items:flex-start; gap:14px; padding:7px 0; line-height:1.45; }
+        .r > span { opacity:.85; min-width:0; }
+        .r b { flex-shrink:0; font-variant-numeric:tabular-nums; }
+        .sub { opacity:.86; line-height:1.45; }
+        .note { opacity:.72; font-size:12px; line-height:1.6; }
+        .chips { gap:8px; }
+        .chip { padding:9px 7px; min-width:75px; }
+        .chip span { opacity:.8; letter-spacing:.5px; }
+        .chip b { font-variant-numeric:tabular-nums; }
+        .led.on, .led.bad, .bat, .bar > div { animation:none; }
+        .led.on, .led.bad { box-shadow:none; }
+        .packs { gap:16px; }
+        table.t { font-variant-numeric:tabular-nums; }
+        table.t th { opacity:.82; }
+        .diag-scroll { overflow-x:auto; max-width:100%; -webkit-overflow-scrolling:touch; }
+        .diag-scroll table { min-width:700px; }
+        .load-grid { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:14px; }
+        .load-kpi { padding:12px;border:1px solid rgba(255,255,255,.1);border-radius:12px;background:rgba(255,255,255,.035); }
+        .load-kpi span { display:block;font-size:12px;opacity:.8;margin-bottom:5px; }
+        .load-kpi b { display:block;font-size:25px;font-variant-numeric:tabular-nums;color:var(--c,#e8ecff); }
+        @media (max-width:440px) {
+         .r { font-size:13px;gap:8px; }
+         .r > span { max-width:65%; }
+         .chip b { font-size:13px; }
+         .fn { width:82px; }
+         .fn .fv { font-size:14px; }
+         .fn .fl { letter-spacing:1px; }
+         .packs { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%;gap:20px 10px; }
+         .load-kpi b { font-size:22px; }
+        }
+        @media (prefers-reduced-motion:reduce) { *, *::before, *::after { animation:none !important; } }
+  - type: grid
+    cards:
+    - type: heading
+      heading: Pack 3 (slave, ID 2)
+      icon: mdi:battery-high
+    - type: custom:button-card
+      template:
+      - neon
+      - neon_pack_cells
+      name: 16 cellen
+      icon: mdi:view-column
+      variables:
+        accent: '#4DA3FF'
+        pack_prefix: sensor.docan_pack_3_
+      grid_options:
+        columns: full
+      triggers_update:
+      - sensor.docan_pack_3_state_of_charge
+      - sensor.docan_pack_3_cell_01_voltage
+      - sensor.docan_pack_3_cell_02_voltage
+      - sensor.docan_pack_3_cell_03_voltage
+      - sensor.docan_pack_3_cell_04_voltage
+      - sensor.docan_pack_3_cell_05_voltage
+      - sensor.docan_pack_3_cell_06_voltage
+      - sensor.docan_pack_3_cell_07_voltage
+      - sensor.docan_pack_3_cell_08_voltage
+      - sensor.docan_pack_3_cell_09_voltage
+      - sensor.docan_pack_3_cell_10_voltage
+      - sensor.docan_pack_3_cell_11_voltage
+      - sensor.docan_pack_3_cell_12_voltage
+      - sensor.docan_pack_3_cell_13_voltage
+      - sensor.docan_pack_3_cell_14_voltage
+      - sensor.docan_pack_3_cell_15_voltage
+      - sensor.docan_pack_3_cell_16_voltage
+      - sensor.docan_pack_3_cell_voltage_delta
+      - sensor.docan_pack_3_pack_current
+      - sensor.docan_pack_3_highest_cell_voltage
+      extra_styles: |
+        @keyframes pulse { 0%,100% { filter:brightness(1); } 50% { filter:brightness(1.6); } }
+        .cells { display:flex; gap:4px; height:120px; align-items:stretch; box-sizing:border-box; margin-top:14px; padding-top:14px; }
+        .c { flex:1; position:relative; }
+        .c .b { position:absolute; left:0; right:0; bottom:0; }
+        .b { position:relative; width:100%; border-radius:5px 5px 2px 2px; background:linear-gradient(to top, color-mix(in srgb, var(--k) 20%, transparent), var(--k)); box-shadow:0 0 8px color-mix(in srgb, var(--k) 55%, transparent); }
+        .b.x { animation:pulse 2s ease-in-out infinite; }
+        .b em { position:absolute; top:-15px; left:0; right:0; text-align:center; font-style:normal; font-size:10px; color:var(--k); }
+        .lb { display:flex; gap:4px; margin-top:4px; }
+        .lb i { flex:1; text-align:center; font-style:normal; font-size:10px; opacity:.5; }
+        .st { display:flex; justify-content:space-between; gap:6px; margin-top:14px; padding-top:10px; border-top:1px solid rgba(255,255,255,.08); }
+        .st div { display:flex; flex-direction:column; align-items:center; }
+        .st span { font-size:10px; letter-spacing:1px; opacity:.55; text-transform:uppercase; }
+        .st b { font-size:14px; }
+        .ph { font-size:12px; opacity:.55; margin-top:10px; white-space:normal; }
+
+
+        /* Calm typography and predictable alignment. */
+        .big { font-size:clamp(30px,5vw,42px); line-height:1.15; font-variant-numeric:tabular-nums; }
+        .mid { font-size:28px; font-variant-numeric:tabular-nums; }
+        .k { letter-spacing:1.6px; opacity:.78; }
+        .r { align-items:flex-start; gap:14px; padding:7px 0; line-height:1.45; }
+        .r > span { opacity:.85; min-width:0; }
+        .r b { flex-shrink:0; font-variant-numeric:tabular-nums; }
+        .sub { opacity:.86; line-height:1.45; }
+        .note { opacity:.72; font-size:12px; line-height:1.6; }
+        .chips { gap:8px; }
+        .chip { padding:9px 7px; min-width:75px; }
+        .chip span { opacity:.8; letter-spacing:.5px; }
+        .chip b { font-variant-numeric:tabular-nums; }
+        .led.on, .led.bad, .bat, .bar > div { animation:none; }
+        .led.on, .led.bad { box-shadow:none; }
+        .packs { gap:16px; }
+        table.t { font-variant-numeric:tabular-nums; }
+        table.t th { opacity:.82; }
+        .diag-scroll { overflow-x:auto; max-width:100%; -webkit-overflow-scrolling:touch; }
+        .diag-scroll table { min-width:700px; }
+        .load-grid { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:14px; }
+        .load-kpi { padding:12px;border:1px solid rgba(255,255,255,.1);border-radius:12px;background:rgba(255,255,255,.035); }
+        .load-kpi span { display:block;font-size:12px;opacity:.8;margin-bottom:5px; }
+        .load-kpi b { display:block;font-size:25px;font-variant-numeric:tabular-nums;color:var(--c,#e8ecff); }
+        @media (max-width:440px) {
+         .r { font-size:13px;gap:8px; }
+         .r > span { max-width:65%; }
+         .chip b { font-size:13px; }
+         .fn { width:82px; }
+         .fn .fv { font-size:14px; }
+         .fn .fl { letter-spacing:1px; }
+         .packs { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%;gap:20px 10px; }
+         .load-kpi b { font-size:22px; }
+        }
+        @media (prefers-reduced-motion:reduce) { *, *::before, *::after { animation:none !important; } }
+    - type: custom:button-card
+      template:
+      - neon
+      - neon_pack_health
+      name: Gezondheid
+      icon: mdi:battery-heart-variant
+      variables:
+        accent: '#4DA3FF'
+        pack_prefix: sensor.docan_pack_3_
+      grid_options:
+        columns: full
+      triggers_update:
+      - sensor.docan_pack_3_state_of_charge
+      - sensor.docan_pack_3_state_of_health
+      - sensor.docan_pack_3_cycle_count
+      - sensor.docan_pack_3_full_charge_capacity
+      - sensor.docan_pack_3_design_capacity
+      - sensor.docan_pack_3_cell_temperature_1
+      - sensor.docan_pack_3_cell_temperature_2
+      - sensor.docan_pack_3_cell_temperature_3
+      - sensor.docan_pack_3_cell_temperature_4
+      - sensor.docan_pack_3_environment_temperature
+      - sensor.docan_pack_3_raw_voltage_status
+      - sensor.docan_pack_3_raw_temperature_status
+      - sensor.docan_pack_3_bms_protections
+      - sensor.docan_pack_3_bms_warnings
+      - binary_sensor.docan_pack_3_balancer_active
+      - sensor.docan_pack_3_valid_frames
+      extra_styles: |
+        @keyframes blink { 0%,100% { opacity:1; } 50% { opacity:.25; } }
+        .hl { display:flex; gap:18px; align-items:center; margin-top:12px; }
+        .ring { width:92px; height:92px; flex:0 0 92px; border-radius:50%; background:conic-gradient(#4DA3FF var(--d), rgba(255,255,255,.08) 0); display:flex; align-items:center; justify-content:center; box-shadow:0 0 16px color-mix(in srgb, #4DA3FF 40%, transparent); }
+        .ring > div { width:74px; height:74px; border-radius:50%; background:#0b1022; display:flex; flex-direction:column; align-items:center; justify-content:center; }
+        .ring b { font-size:20px; }
+        .ring span { font-size:10px; letter-spacing:2px; opacity:.55; }
+        .kv { flex:1; }
+        .r { display:flex; justify-content:space-between; padding:3px 0; font-size:14px; }
+        .r span { opacity:.65; }
+        .cb { height:6px; border-radius:4px; background:rgba(255,255,255,.08); margin-top:8px; overflow:hidden; }
+        .cb div { height:100%; background:#4DA3FF; box-shadow:0 0 8px #4DA3FF; }
+        .cp { font-size:11px; opacity:.55; margin-top:4px; }
+        .temps { display:flex; gap:6px; margin-top:14px; }
+        .t { flex:1; border-radius:10px; padding:6px 0; text-align:center; background:color-mix(in srgb, var(--k) 12%, transparent); border:1px solid color-mix(in srgb, var(--k) 45%, transparent); }
+        .t span { display:block; font-size:10px; opacity:.6; }
+        .t b { font-size:14px; color:var(--k); }
+        .sts { display:flex; gap:6px; margin-top:8px; }
+        .s { flex:1; border-radius:10px; padding:6px 8px; background:rgba(255,255,255,.04); }
+        .s span { display:block; font-size:10px; opacity:.55; }
+        .s b { font-size:13px; }
+        .s.ok b { color:#39ff88; }
+        .s.bad b { color:#ff3d71; }
+        .s.warn b { color:#ffaa00; }
+        .s.warn { background:rgba(255,170,0,.10); }
+        .s.bl b { color:#00E5FF; }
+        .s.bl { background:rgba(0,229,255,.10); }
+        .s.bad { background:rgba(255,61,113,.12); animation:blink 1.2s infinite; }
+        .lv { flex:1.4; }
+        .lv i { display:inline-block; width:8px; height:8px; border-radius:50%; background:#5c6378; margin-right:6px; }
+        .lv.on i { background:#39ff88; box-shadow:0 0 8px #39ff88; animation:blink 1.6s infinite; }
+
+
+        /* Calm typography and predictable alignment. */
+        .big { font-size:clamp(30px,5vw,42px); line-height:1.15; font-variant-numeric:tabular-nums; }
+        .mid { font-size:28px; font-variant-numeric:tabular-nums; }
+        .k { letter-spacing:1.6px; opacity:.78; }
+        .r { align-items:flex-start; gap:14px; padding:7px 0; line-height:1.45; }
+        .r > span { opacity:.85; min-width:0; }
+        .r b { flex-shrink:0; font-variant-numeric:tabular-nums; }
+        .sub { opacity:.86; line-height:1.45; }
+        .note { opacity:.72; font-size:12px; line-height:1.6; }
+        .chips { gap:8px; }
+        .chip { padding:9px 7px; min-width:75px; }
+        .chip span { opacity:.8; letter-spacing:.5px; }
+        .chip b { font-variant-numeric:tabular-nums; }
+        .led.on, .led.bad, .bat, .bar > div { animation:none; }
+        .led.on, .led.bad { box-shadow:none; }
+        .packs { gap:16px; }
+        table.t { font-variant-numeric:tabular-nums; }
+        table.t th { opacity:.82; }
+        .diag-scroll { overflow-x:auto; max-width:100%; -webkit-overflow-scrolling:touch; }
+        .diag-scroll table { min-width:700px; }
+        .load-grid { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:14px; }
+        .load-kpi { padding:12px;border:1px solid rgba(255,255,255,.1);border-radius:12px;background:rgba(255,255,255,.035); }
+        .load-kpi span { display:block;font-size:12px;opacity:.8;margin-bottom:5px; }
+        .load-kpi b { display:block;font-size:25px;font-variant-numeric:tabular-nums;color:var(--c,#e8ecff); }
+        @media (max-width:440px) {
+         .r { font-size:13px;gap:8px; }
+         .r > span { max-width:65%; }
+         .chip b { font-size:13px; }
+         .fn { width:82px; }
+         .fn .fv { font-size:14px; }
+         .fn .fl { letter-spacing:1px; }
+         .packs { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%;gap:20px 10px; }
+         .load-kpi b { font-size:22px; }
+        }
+        @media (prefers-reduced-motion:reduce) { *, *::before, *::after { animation:none !important; } }
+  - type: grid
+    cards:
+    - type: heading
+      heading: Pack 4 (slave, ID 3)
+      icon: mdi:battery-high
+    - type: custom:button-card
+      template:
+      - neon
+      - neon_pack_cells
+      name: 16 cellen
+      icon: mdi:view-column
+      variables:
+        accent: '#A78BFA'
+        pack_prefix: sensor.docan_pack_4_
+      grid_options:
+        columns: full
+      triggers_update:
+      - sensor.docan_pack_4_state_of_charge
+      - sensor.docan_pack_4_cell_01_voltage
+      - sensor.docan_pack_4_cell_02_voltage
+      - sensor.docan_pack_4_cell_03_voltage
+      - sensor.docan_pack_4_cell_04_voltage
+      - sensor.docan_pack_4_cell_05_voltage
+      - sensor.docan_pack_4_cell_06_voltage
+      - sensor.docan_pack_4_cell_07_voltage
+      - sensor.docan_pack_4_cell_08_voltage
+      - sensor.docan_pack_4_cell_09_voltage
+      - sensor.docan_pack_4_cell_10_voltage
+      - sensor.docan_pack_4_cell_11_voltage
+      - sensor.docan_pack_4_cell_12_voltage
+      - sensor.docan_pack_4_cell_13_voltage
+      - sensor.docan_pack_4_cell_14_voltage
+      - sensor.docan_pack_4_cell_15_voltage
+      - sensor.docan_pack_4_cell_16_voltage
+      - sensor.docan_pack_4_cell_voltage_delta
+      - sensor.docan_pack_4_pack_current
+      - sensor.docan_pack_4_highest_cell_voltage
+      extra_styles: |
+        @keyframes pulse { 0%,100% { filter:brightness(1); } 50% { filter:brightness(1.6); } }
+        .cells { display:flex; gap:4px; height:120px; align-items:stretch; box-sizing:border-box; margin-top:14px; padding-top:14px; }
+        .c { flex:1; position:relative; }
+        .c .b { position:absolute; left:0; right:0; bottom:0; }
+        .b { position:relative; width:100%; border-radius:5px 5px 2px 2px; background:linear-gradient(to top, color-mix(in srgb, var(--k) 20%, transparent), var(--k)); box-shadow:0 0 8px color-mix(in srgb, var(--k) 55%, transparent); }
+        .b.x { animation:pulse 2s ease-in-out infinite; }
+        .b em { position:absolute; top:-15px; left:0; right:0; text-align:center; font-style:normal; font-size:10px; color:var(--k); }
+        .lb { display:flex; gap:4px; margin-top:4px; }
+        .lb i { flex:1; text-align:center; font-style:normal; font-size:10px; opacity:.5; }
+        .st { display:flex; justify-content:space-between; gap:6px; margin-top:14px; padding-top:10px; border-top:1px solid rgba(255,255,255,.08); }
+        .st div { display:flex; flex-direction:column; align-items:center; }
+        .st span { font-size:10px; letter-spacing:1px; opacity:.55; text-transform:uppercase; }
+        .st b { font-size:14px; }
+        .ph { font-size:12px; opacity:.55; margin-top:10px; white-space:normal; }
+
+
+        /* Calm typography and predictable alignment. */
+        .big { font-size:clamp(30px,5vw,42px); line-height:1.15; font-variant-numeric:tabular-nums; }
+        .mid { font-size:28px; font-variant-numeric:tabular-nums; }
+        .k { letter-spacing:1.6px; opacity:.78; }
+        .r { align-items:flex-start; gap:14px; padding:7px 0; line-height:1.45; }
+        .r > span { opacity:.85; min-width:0; }
+        .r b { flex-shrink:0; font-variant-numeric:tabular-nums; }
+        .sub { opacity:.86; line-height:1.45; }
+        .note { opacity:.72; font-size:12px; line-height:1.6; }
+        .chips { gap:8px; }
+        .chip { padding:9px 7px; min-width:75px; }
+        .chip span { opacity:.8; letter-spacing:.5px; }
+        .chip b { font-variant-numeric:tabular-nums; }
+        .led.on, .led.bad, .bat, .bar > div { animation:none; }
+        .led.on, .led.bad { box-shadow:none; }
+        .packs { gap:16px; }
+        table.t { font-variant-numeric:tabular-nums; }
+        table.t th { opacity:.82; }
+        .diag-scroll { overflow-x:auto; max-width:100%; -webkit-overflow-scrolling:touch; }
+        .diag-scroll table { min-width:700px; }
+        .load-grid { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:14px; }
+        .load-kpi { padding:12px;border:1px solid rgba(255,255,255,.1);border-radius:12px;background:rgba(255,255,255,.035); }
+        .load-kpi span { display:block;font-size:12px;opacity:.8;margin-bottom:5px; }
+        .load-kpi b { display:block;font-size:25px;font-variant-numeric:tabular-nums;color:var(--c,#e8ecff); }
+        @media (max-width:440px) {
+         .r { font-size:13px;gap:8px; }
+         .r > span { max-width:65%; }
+         .chip b { font-size:13px; }
+         .fn { width:82px; }
+         .fn .fv { font-size:14px; }
+         .fn .fl { letter-spacing:1px; }
+         .packs { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%;gap:20px 10px; }
+         .load-kpi b { font-size:22px; }
+        }
+        @media (prefers-reduced-motion:reduce) { *, *::before, *::after { animation:none !important; } }
+    - type: custom:button-card
+      template:
+      - neon
+      - neon_pack_health
+      name: Gezondheid
+      icon: mdi:battery-heart-variant
+      variables:
+        accent: '#A78BFA'
+        pack_prefix: sensor.docan_pack_4_
+      grid_options:
+        columns: full
+      triggers_update:
+      - sensor.docan_pack_4_state_of_charge
+      - sensor.docan_pack_4_state_of_health
+      - sensor.docan_pack_4_cycle_count
+      - sensor.docan_pack_4_full_charge_capacity
+      - sensor.docan_pack_4_design_capacity
+      - sensor.docan_pack_4_cell_temperature_1
+      - sensor.docan_pack_4_cell_temperature_2
+      - sensor.docan_pack_4_cell_temperature_3
+      - sensor.docan_pack_4_cell_temperature_4
+      - sensor.docan_pack_4_environment_temperature
+      - sensor.docan_pack_4_raw_voltage_status
+      - sensor.docan_pack_4_raw_temperature_status
+      - sensor.docan_pack_4_bms_protections
+      - sensor.docan_pack_4_bms_warnings
+      - binary_sensor.docan_pack_4_balancer_active
+      - sensor.docan_pack_4_valid_frames
+      extra_styles: |
+        @keyframes blink { 0%,100% { opacity:1; } 50% { opacity:.25; } }
+        .hl { display:flex; gap:18px; align-items:center; margin-top:12px; }
+        .ring { width:92px; height:92px; flex:0 0 92px; border-radius:50%; background:conic-gradient(#A78BFA var(--d), rgba(255,255,255,.08) 0); display:flex; align-items:center; justify-content:center; box-shadow:0 0 16px color-mix(in srgb, #A78BFA 40%, transparent); }
+        .ring > div { width:74px; height:74px; border-radius:50%; background:#0b1022; display:flex; flex-direction:column; align-items:center; justify-content:center; }
+        .ring b { font-size:20px; }
+        .ring span { font-size:10px; letter-spacing:2px; opacity:.55; }
+        .kv { flex:1; }
+        .r { display:flex; justify-content:space-between; padding:3px 0; font-size:14px; }
+        .r span { opacity:.65; }
+        .cb { height:6px; border-radius:4px; background:rgba(255,255,255,.08); margin-top:8px; overflow:hidden; }
+        .cb div { height:100%; background:#A78BFA; box-shadow:0 0 8px #A78BFA; }
+        .cp { font-size:11px; opacity:.55; margin-top:4px; }
+        .temps { display:flex; gap:6px; margin-top:14px; }
+        .t { flex:1; border-radius:10px; padding:6px 0; text-align:center; background:color-mix(in srgb, var(--k) 12%, transparent); border:1px solid color-mix(in srgb, var(--k) 45%, transparent); }
+        .t span { display:block; font-size:10px; opacity:.6; }
+        .t b { font-size:14px; color:var(--k); }
+        .sts { display:flex; gap:6px; margin-top:8px; }
+        .s { flex:1; border-radius:10px; padding:6px 8px; background:rgba(255,255,255,.04); }
+        .s span { display:block; font-size:10px; opacity:.55; }
+        .s b { font-size:13px; }
+        .s.ok b { color:#39ff88; }
+        .s.bad b { color:#ff3d71; }
+        .s.warn b { color:#ffaa00; }
+        .s.warn { background:rgba(255,170,0,.10); }
+        .s.bl b { color:#00E5FF; }
+        .s.bl { background:rgba(0,229,255,.10); }
+        .s.bad { background:rgba(255,61,113,.12); animation:blink 1.2s infinite; }
+        .lv { flex:1.4; }
+        .lv i { display:inline-block; width:8px; height:8px; border-radius:50%; background:#5c6378; margin-right:6px; }
+        .lv.on i { background:#39ff88; box-shadow:0 0 8px #39ff88; animation:blink 1.6s infinite; }
+
+
+        /* Calm typography and predictable alignment. */
+        .big { font-size:clamp(30px,5vw,42px); line-height:1.15; font-variant-numeric:tabular-nums; }
+        .mid { font-size:28px; font-variant-numeric:tabular-nums; }
+        .k { letter-spacing:1.6px; opacity:.78; }
+        .r { align-items:flex-start; gap:14px; padding:7px 0; line-height:1.45; }
+        .r > span { opacity:.85; min-width:0; }
+        .r b { flex-shrink:0; font-variant-numeric:tabular-nums; }
+        .sub { opacity:.86; line-height:1.45; }
+        .note { opacity:.72; font-size:12px; line-height:1.6; }
+        .chips { gap:8px; }
+        .chip { padding:9px 7px; min-width:75px; }
+        .chip span { opacity:.8; letter-spacing:.5px; }
+        .chip b { font-variant-numeric:tabular-nums; }
+        .led.on, .led.bad, .bat, .bar > div { animation:none; }
+        .led.on, .led.bad { box-shadow:none; }
+        .packs { gap:16px; }
+        table.t { font-variant-numeric:tabular-nums; }
+        table.t th { opacity:.82; }
+        .diag-scroll { overflow-x:auto; max-width:100%; -webkit-overflow-scrolling:touch; }
+        .diag-scroll table { min-width:700px; }
+        .load-grid { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:14px; }
+        .load-kpi { padding:12px;border:1px solid rgba(255,255,255,.1);border-radius:12px;background:rgba(255,255,255,.035); }
+        .load-kpi span { display:block;font-size:12px;opacity:.8;margin-bottom:5px; }
+        .load-kpi b { display:block;font-size:25px;font-variant-numeric:tabular-nums;color:var(--c,#e8ecff); }
+        @media (max-width:440px) {
+         .r { font-size:13px;gap:8px; }
+         .r > span { max-width:65%; }
+         .chip b { font-size:13px; }
+         .fn { width:82px; }
+         .fn .fv { font-size:14px; }
+         .fn .fl { letter-spacing:1px; }
+         .packs { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%;gap:20px 10px; }
+         .load-kpi b { font-size:22px; }
+        }
+        @media (prefers-reduced-motion:reduce) { *, *::before, *::after { animation:none !important; } }
+  - type: grid
+    cards:
+    - type: heading
+      heading: Trends
+      icon: mdi:chart-timeline-variant
+    - type: custom:apexcharts-card
+      grid_options:
+        columns: full
+      header:
+        show: true
+        title: State of charge (24 uur)
+        show_states: false
+      graph_span: 24h
+      update_interval: 5min
+      yaxis:
+      - min: 0
+        max: 100
+        decimals: 0
+      apex_config:
+        chart:
+          height: 260
+          animations:
+            enabled: false
+          background: transparent
+          foreColor: '#8A93B8'
+        theme:
+          mode: dark
+        grid:
+          borderColor: rgba(255,255,255,0.06)
+          strokeDashArray: 3
+        tooltip:
+          theme: dark
+        stroke:
+          curve: smooth
+        legend:
+          show: true
+          fontSize: 12px
+          itemMargin:
+            horizontal: 8
+            vertical: 4
+      series:
+      - entity: sensor.docan_pack_1_state_of_charge
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Pack 1
+        type: area
+        color: '#00E5FF'
+        stroke_width: 2
+        opacity: 0.25
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_2_state_of_charge
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Pack 2
+        type: area
+        color: '#FF4FD8'
+        stroke_width: 2
+        opacity: 0.25
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_3_state_of_charge
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Pack 3
+        type: area
+        color: '#4DA3FF'
+        stroke_width: 2
+        opacity: 0.25
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_4_state_of_charge
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Pack 4
+        type: area
+        color: '#A78BFA'
+        stroke_width: 2
+        opacity: 0.25
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.inverter_battery
+        name: Deye SoC
+        type: line
+        color: '#8A93B8'
+        stroke_width: 1
+        stroke_dash: 4
+        group_by:
+          duration: 10min
+          func: avg
+    - type: custom:apexcharts-card
+      grid_options:
+        columns: full
+      header:
+        show: true
+        title: Celspanning delta (7 dagen)
+        show_states: false
+      graph_span: 7d
+      update_interval: 5min
+      yaxis:
+      - min: 0
+        decimals: 0
+      apex_config:
+        chart:
+          height: 260
+          animations:
+            enabled: false
+          background: transparent
+          foreColor: '#8A93B8'
+        theme:
+          mode: dark
+        grid:
+          borderColor: rgba(255,255,255,0.06)
+          strokeDashArray: 3
+        tooltip:
+          theme: dark
+        stroke:
+          curve: smooth
+        legend:
+          show: true
+          fontSize: 12px
+          itemMargin:
+            horizontal: 8
+            vertical: 4
+        annotations:
+          yaxis:
+          - 'true': 30
+            borderColor: '#FFAA00'
+            strokeDashArray: 4
+            label:
+              text: 30 mV
+      series:
+      - entity: sensor.docan_pack_1_cell_voltage_delta
+        statistics:
+          type: max
+          period: 5minute
+          align: middle
+        name: Pack 1
+        type: line
+        color: '#00E5FF'
+        stroke_width: 2
+        group_by:
+          duration: 30min
+          func: max
+      - entity: sensor.docan_pack_2_cell_voltage_delta
+        statistics:
+          type: max
+          period: 5minute
+          align: middle
+        name: Pack 2
+        type: line
+        color: '#FF4FD8'
+        stroke_width: 2
+        group_by:
+          duration: 30min
+          func: max
+      - entity: sensor.docan_pack_3_cell_voltage_delta
+        statistics:
+          type: max
+          period: 5minute
+          align: middle
+        name: Pack 3
+        type: line
+        color: '#4DA3FF'
+        stroke_width: 2
+        group_by:
+          duration: 30min
+          func: max
+      - entity: sensor.docan_pack_4_cell_voltage_delta
+        statistics:
+          type: max
+          period: 5minute
+          align: middle
+        name: Pack 4
+        type: line
+        color: '#A78BFA'
+        stroke_width: 2
+        group_by:
+          duration: 30min
+          func: max
+  - type: grid
+    cards:
+    - type: heading
+      heading: Temperatuur & cellen
+      icon: mdi:thermometer-lines
+    - type: custom:apexcharts-card
+      grid_options:
+        columns: full
+      header:
+        show: true
+        title: Temperatuur (48 uur)
+        show_states: false
+      graph_span: 48h
+      update_interval: 5min
+      yaxis:
+      - decimals: 0
+      apex_config:
+        chart:
+          height: 260
+          animations:
+            enabled: false
+          background: transparent
+          foreColor: '#8A93B8'
+        theme:
+          mode: dark
+        grid:
+          borderColor: rgba(255,255,255,0.06)
+          strokeDashArray: 3
+        tooltip:
+          theme: dark
+        stroke:
+          curve: smooth
+        legend:
+          show: true
+          fontSize: 12px
+          itemMargin:
+            horizontal: 8
+            vertical: 4
+      series:
+      - entity: sensor.docan_pack_1_cell_temperature_1
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Pack 1 cel
+        type: line
+        color: '#00E5FF'
+        stroke_width: 2
+        group_by:
+          duration: 15min
+          func: avg
+      - entity: sensor.docan_pack_1_environment_temperature
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Pack 1 omgeving
+        type: line
+        color: '#00E5FF'
+        stroke_width: 1
+        opacity: 0.6
+        group_by:
+          duration: 15min
+          func: avg
+      - entity: sensor.docan_pack_2_cell_temperature_1
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Pack 2 cel
+        type: line
+        color: '#FF4FD8'
+        stroke_width: 2
+        group_by:
+          duration: 15min
+          func: avg
+      - entity: sensor.docan_pack_2_environment_temperature
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Pack 2 omgeving
+        type: line
+        color: '#FF4FD8'
+        stroke_width: 1
+        opacity: 0.6
+        group_by:
+          duration: 15min
+          func: avg
+      - entity: sensor.docan_pack_3_cell_temperature_1
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Pack 3 cel
+        type: line
+        color: '#4DA3FF'
+        stroke_width: 2
+        group_by:
+          duration: 15min
+          func: avg
+      - entity: sensor.docan_pack_3_environment_temperature
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Pack 3 omgeving
+        type: line
+        color: '#4DA3FF'
+        stroke_width: 1
+        opacity: 0.6
+        group_by:
+          duration: 15min
+          func: avg
+      - entity: sensor.docan_pack_4_cell_temperature_1
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Pack 4 cel
+        type: line
+        color: '#A78BFA'
+        stroke_width: 2
+        group_by:
+          duration: 15min
+          func: avg
+      - entity: sensor.docan_pack_4_environment_temperature
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Pack 4 omgeving
+        type: line
+        color: '#A78BFA'
+        stroke_width: 1
+        opacity: 0.6
+        group_by:
+          duration: 15min
+          func: avg
+    - type: custom:apexcharts-card
+      grid_options:
+        columns: full
+      header:
+        show: true
+        title: Pack 1 cellen (24 uur)
+        show_states: false
+      graph_span: 24h
+      update_interval: 5min
+      yaxis:
+      - decimals: 3
+      apex_config:
+        chart:
+          height: 240
+          animations:
+            enabled: false
+          background: transparent
+          foreColor: '#8A93B8'
+        theme:
+          mode: dark
+        grid:
+          borderColor: rgba(255,255,255,0.06)
+          strokeDashArray: 3
+        tooltip:
+          theme: dark
+          shared: true
+        stroke:
+          curve: smooth
+        legend:
+          show: false
+          fontSize: 12px
+          itemMargin:
+            horizontal: 8
+            vertical: 4
+        colors:
+        - '#00E5FF'
+      series:
+      - entity: sensor.docan_pack_1_cell_01_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 1
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_1_cell_02_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 2
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_1_cell_03_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 3
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_1_cell_04_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 4
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_1_cell_05_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 5
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_1_cell_06_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 6
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_1_cell_07_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 7
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_1_cell_08_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 8
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_1_cell_09_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 9
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_1_cell_10_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 10
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_1_cell_11_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 11
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_1_cell_12_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 12
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_1_cell_13_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 13
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_1_cell_14_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 14
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_1_cell_15_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 15
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_1_cell_16_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 16
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+    - type: custom:apexcharts-card
+      grid_options:
+        columns: full
+      header:
+        show: true
+        title: Pack 2 cellen (24 uur)
+        show_states: false
+      graph_span: 24h
+      update_interval: 5min
+      yaxis:
+      - decimals: 3
+      apex_config:
+        chart:
+          height: 240
+          animations:
+            enabled: false
+          background: transparent
+          foreColor: '#8A93B8'
+        theme:
+          mode: dark
+        grid:
+          borderColor: rgba(255,255,255,0.06)
+          strokeDashArray: 3
+        tooltip:
+          theme: dark
+          shared: true
+        stroke:
+          curve: smooth
+        legend:
+          show: false
+          fontSize: 12px
+          itemMargin:
+            horizontal: 8
+            vertical: 4
+        colors:
+        - '#FF4FD8'
+      series:
+      - entity: sensor.docan_pack_2_cell_01_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 1
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_2_cell_02_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 2
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_2_cell_03_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 3
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_2_cell_04_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 4
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_2_cell_05_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 5
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_2_cell_06_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 6
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_2_cell_07_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 7
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_2_cell_08_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 8
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_2_cell_09_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 9
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_2_cell_10_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 10
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_2_cell_11_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 11
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_2_cell_12_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 12
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_2_cell_13_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 13
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_2_cell_14_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 14
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_2_cell_15_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 15
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_2_cell_16_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 16
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+    - type: custom:apexcharts-card
+      grid_options:
+        columns: full
+      header:
+        show: true
+        title: Pack 3 cellen (24 uur)
+        show_states: false
+      graph_span: 24h
+      update_interval: 5min
+      yaxis:
+      - decimals: 3
+      apex_config:
+        chart:
+          height: 240
+          animations:
+            enabled: false
+          background: transparent
+          foreColor: '#8A93B8'
+        theme:
+          mode: dark
+        grid:
+          borderColor: rgba(255,255,255,0.06)
+          strokeDashArray: 3
+        tooltip:
+          theme: dark
+          shared: true
+        stroke:
+          curve: smooth
+        legend:
+          show: false
+          fontSize: 12px
+          itemMargin:
+            horizontal: 8
+            vertical: 4
+        colors:
+        - '#4DA3FF'
+      series:
+      - entity: sensor.docan_pack_3_cell_01_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 1
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_3_cell_02_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 2
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_3_cell_03_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 3
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_3_cell_04_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 4
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_3_cell_05_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 5
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_3_cell_06_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 6
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_3_cell_07_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 7
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_3_cell_08_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 8
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_3_cell_09_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 9
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_3_cell_10_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 10
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_3_cell_11_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 11
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_3_cell_12_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 12
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_3_cell_13_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 13
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_3_cell_14_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 14
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_3_cell_15_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 15
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_3_cell_16_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 16
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+    - type: custom:apexcharts-card
+      grid_options:
+        columns: full
+      header:
+        show: true
+        title: Pack 4 cellen (24 uur)
+        show_states: false
+      graph_span: 24h
+      update_interval: 5min
+      yaxis:
+      - decimals: 3
+      apex_config:
+        chart:
+          height: 240
+          animations:
+            enabled: false
+          background: transparent
+          foreColor: '#8A93B8'
+        theme:
+          mode: dark
+        grid:
+          borderColor: rgba(255,255,255,0.06)
+          strokeDashArray: 3
+        tooltip:
+          theme: dark
+          shared: true
+        stroke:
+          curve: smooth
+        legend:
+          show: false
+          fontSize: 12px
+          itemMargin:
+            horizontal: 8
+            vertical: 4
+        colors:
+        - '#A78BFA'
+      series:
+      - entity: sensor.docan_pack_4_cell_01_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 1
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_4_cell_02_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 2
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_4_cell_03_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 3
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_4_cell_04_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 4
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_4_cell_05_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 5
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_4_cell_06_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 6
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_4_cell_07_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 7
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_4_cell_08_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 8
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_4_cell_09_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 9
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_4_cell_10_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 10
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_4_cell_11_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 11
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_4_cell_12_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 12
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_4_cell_13_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 13
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_4_cell_14_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 14
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_4_cell_15_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 15
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
+      - entity: sensor.docan_pack_4_cell_16_voltage
+        statistics:
+          type: mean
+          period: 5minute
+          align: middle
+        name: Cel 16
+        stroke_width: 1
+        group_by:
+          duration: 10min
+          func: avg
