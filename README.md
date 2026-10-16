@@ -88,10 +88,6 @@ This ordering matches the PCB silkscreen.
 
 *Front of the opened stick: ESP32-WROOM-32E and labelled test pads.*
 
-![Another front overview of the opened stick](images/IMG20260927185934.jpg)
-
-*Second front overview showing the component layout and USB-A plug.*
-
 ![Rear of the DR-WIFI-04-V2 board](images/IMG20260927221016.jpg)
 
 *Rear of the PCB with the `DR-WIFI-04-V2` marking, board date and visible traces.*
